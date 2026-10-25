@@ -1,0 +1,36 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis-data:/data]
+  api:
+    build: ./backend
+    environment:
+      MDS_DATA_DIR: /data
+      MDS_DATABASE_URL: sqlite:////data/molecular_docking.db
+      MDS_REDIS_URL: redis://redis:6379/0
+      MDS_FRONTEND_ORIGIN: http://localhost:5173
+    volumes: [./data:/data]
+    ports: ["8001:8000"]
+    depends_on: [redis]
+  worker:
+    build: ./backend
+    # RDKit/Meekoのfork非対応なネイティブ処理を安定して実行する。
+    command: rq worker docking default --worker-class rq.worker.SimpleWorker --url redis://redis:6379/0 --path /app
+    environment:
+      MDS_DATA_DIR: /data
+      MDS_DATABASE_URL: sqlite:////data/molecular_docking.db
+      MDS_REDIS_URL: redis://redis:6379/0
+    volumes: [./data:/data]
+    depends_on: [redis]
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      MDS_API_URL: http://api:8000
+    volumes: [./frontend:/app]
+    ports: ["5175:5173"]
+    depends_on: [api]
+volumes:
+  redis-data:

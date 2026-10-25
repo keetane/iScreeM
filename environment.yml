@@ -1,0 +1,21 @@
+name: iScreeM
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - openmm
+  - pdbfixer
+  - pdb2pqr
+  - rdkit
+  - meeko
+  - fastapi
+  - uvicorn
+  - pydantic-settings
+  - sqlalchemy
+  - python-multipart
+  - redis-py
+  - rq
+  - httpx
+  - pytest
+  - ruff
+  - pip

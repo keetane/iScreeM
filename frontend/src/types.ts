@@ -1,0 +1,13 @@
+export type Axis3={x:number;y:number;z:number}
+export type Tool={name:string;available:boolean;path:string|null;version:string|null;error:string|null}
+export type Residue={name:string;number:string;one_letter:string}
+export type ChainSequence={id:string;sequence:string;residues:Residue[]}
+export type StructureLigand={name:string;chain?:string;residue_number?:string;atom_count:number}
+export type Protein={id:string;project_id:string;name:string;prepared_path:string|null;prepared_receptor_path:string|null;stats:{format?:'pdb'|'cif';source_format?:'pdb'|'cif';atom_count:number;residue_count:number;chains:{id:string;residue_count:number}[];sequences?:ChainSequence[];hetero_molecules:StructureLigand[];water_atom_count:number;metals:{element:string;count:number}[];warnings:string[]}}
+export type Pocket={id:string;project_id:string;protein_id:string;pocket_key:string;rank:number;score:number|null;probability:number|null;center:Axis3;residues:string[];points:number[][]}
+export type Grid={id:string;project_id:string;name:string;center:Axis3;size:Axis3;approximate:boolean;pocket_id:string|null}
+export type Ligand={id:string;ligand_code:string;name:string;smiles:string;descriptors:Record<string,number|string>;status:string;error:string|null;prepared_sdf_path:string|null;prepared_pdbqt_path:string|null}
+export type Job={id:string;project_id:string;name:string;kind:string;engine:string|null;status:string;total_count:number;completed_count:number;success_count:number;failed_count:number;error:string|null;created_at:string;cancel_requested:boolean}
+export type DockingResult={key:string;rank:number;job_id:string;job_name:string;engine:string|null;created_at:string;protein_id:string;receptor_name:string;ligand_id:string|null;ligand_code:string;ligand_name:string;smiles:string;pose:number;affinity:number|null;scores?:Record<string,number|null>;pose_url:string}
+export type DockingUpload={upload_id:string;original_name:string;ligands:{ligand_code:string;name:string;sdf_path:string}[]}
+export type Project={id:string;name:string;proteins:Protein[];pockets:Pocket[];grids:Grid[];ligands:Ligand[]}

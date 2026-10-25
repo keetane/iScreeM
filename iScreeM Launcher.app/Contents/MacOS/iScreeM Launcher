@@ -1,0 +1,42 @@
+#!/bin/zsh
+set -u
+
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+LOG="$ROOT/.iscreem-launcher.log"
+NODE_BIN="/Users/keetane/.nvm/versions/node/v22.17.0/bin"
+CONDA="/Users/keetane/miniforge3/bin/conda"
+TOOLS="$ROOT/tools"
+
+export PATH="$TOOLS/smina:$TOOLS/p2rank:$TOOLS/gnina:$TOOLS/redis:$PATH"
+export DYLD_LIBRARY_PATH="$TOOLS/redis/lib:${DYLD_LIBRARY_PATH:-}"
+
+cd "$ROOT"
+touch "$LOG"
+
+REDIS_CLI="$TOOLS/redis/redis-cli"
+REDIS_SERVER="$TOOLS/redis/redis-server"
+if [[ -x "$REDIS_CLI" && -x "$REDIS_SERVER" ]] && ! "$REDIS_CLI" ping >/dev/null 2>&1; then
+  "$REDIS_SERVER" --daemonize yes --dir "$ROOT/data" --logfile "$ROOT/.redis.log" >>"$LOG" 2>&1
+fi
+
+if ! pgrep -f 'uvicorn app.main:app.*--port 8001' >/dev/null 2>&1; then
+  (cd "$ROOT" && nohup "$CONDA" run -n iScreeM env PYTHONPATH=backend uvicorn app.main:app --app-dir backend --port 8001 </dev/null >>"$LOG" 2>&1) &!
+fi
+
+if ! pgrep -f 'rq worker docking default.*redis://localhost:6379/0' >/dev/null 2>&1; then
+  (cd "$ROOT" && nohup "$CONDA" run -n iScreeM rq worker docking default --worker-class rq.worker.SimpleWorker --url redis://localhost:6379/0 --path backend </dev/null >>"$LOG" 2>&1) &!
+fi
+
+if ! pgrep -f 'vite.*--port 5175' >/dev/null 2>&1; then
+  (cd "$ROOT/frontend" && nohup env MDS_API_URL=http://127.0.0.1:8001 PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" run dev -- --host 127.0.0.1 --port 5175 </dev/null >>"$LOG" 2>&1) &!
+fi
+
+for _ in {1..30}; do
+  if curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1; then
+    open http://127.0.0.1:5175/
+    exit 0
+  fi
+  sleep 1
+done
+
+open http://127.0.0.1:5175/
