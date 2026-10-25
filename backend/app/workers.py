@@ -19,6 +19,7 @@ from .services.ligand_normalization import (
     write_validated_sdf,
 )
 from .services.pdb import parse_structure, receptor_atom_coordinates, write_docking_receptor
+from .services.pocket_volume import find_p2rank_points, pocket_metrics, read_p2rank_points
 from .services.protein_prep import protonate_with_pdb2pqr, repair_with_pdbfixer, write_report
 from .services.score_parser import parse_docking_scores
 from .services.storage_names import docking_job_root, unique_database_id
@@ -95,6 +96,8 @@ def run_p2rank(job_id: str, protein_id: str):
             raise RuntimeError("P2Rank completed without a predictions CSV")
         with candidates[0].open(newline="") as handle:
             rows = list(csv.DictReader(handle, skipinitialspace=True))
+        points_path = find_p2rank_points(work)
+        points_by_rank = read_p2rank_points(points_path) if points_path else {}
         existing_keys = {
             pocket.pocket_key
             for pocket in db.scalars(select(Pocket).where(Pocket.protein_id == protein.id))
@@ -123,6 +126,8 @@ def run_p2rank(job_id: str, protein_id: str):
                 continue
             existing_keys.add(pocket_key)
             rank = int(val("rank", default=index))
+            points = points_by_rank.get(rank, [])
+            metrics = pocket_metrics(input_path, points) if points else {}
             db.add(
                 Pocket(
                     id=unique_database_id(db, Pocket, f"{protein.name}_pocket_{rank}"),
@@ -132,9 +137,12 @@ def run_p2rank(job_id: str, protein_id: str):
                     rank=rank,
                     score=float(val("score", default=0)),
                     probability=float(val("probability", default=0)),
+                    volume=metrics.get("volume"),
+                    estimated_max_mw=metrics.get("estimated_max_mw"),
+                    volume_method=metrics.get("volume_method"),
                     center=center,
                     residues=residues,
-                    points=[],
+                    points=points,
                 )
             )
         job.completed_count = job.success_count = 1

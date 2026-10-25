@@ -1632,6 +1632,8 @@ function ProteinBottom({
                       <th>Pocket</th>
                       <th>Score</th>
                       <th>Probability</th>
+                      <th>Pocket volume (Å³)</th>
+                      <th>Estimated MW (Da)</th>
                       <th>Residues</th>
                       <th>Visible</th>
                       <th></th>
@@ -1658,6 +1660,15 @@ function ProteinBottom({
                           </td>
                           <td className="font-mono">
                             {p.probability?.toFixed(3) || "—"}
+                          </td>
+                          <td className="font-mono" title={p.volume_method || undefined}>
+                            {p.volume?.toFixed(1) || "—"}
+                          </td>
+                          <td
+                            className="font-mono"
+                            title="Estimated MW ceiling = 0.45 × pocket volume"
+                          >
+                            {p.estimated_max_mw?.toFixed(1) || "—"}
                           </td>
                           <td>{p.residues.slice(0, 4).join(", ") || "—"}</td>
                           <td>

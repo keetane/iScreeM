@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import Base, engine, get_db
+from .db import Base, engine, ensure_runtime_schema, get_db
 from .models import DockingGrid, DockingJob, JobStatus, Ligand, Pocket, Project, Protein
 from .schemas import (
     CsvExportRequest,
@@ -35,6 +35,12 @@ from .services.docking_uploads import load_docking_upload, prepare_docking_uploa
 from .services.export_names import export_filename
 from .services.grids import grid_from_coordinates
 from .services.pdb import parse_structure, residue_coordinates
+from .services.pocket_volume import (
+    VOLUME_METHOD,
+    find_p2rank_points,
+    pocket_metrics,
+    read_p2rank_points,
+)
 from .services.queue import queue
 from .services.score_parser import parse_docking_scores
 from .services.sdf import split_sdf_records
@@ -43,6 +49,7 @@ from .services.storage_names import docking_job_root, unique_database_id, unique
 
 settings.prepare()
 Base.metadata.create_all(engine)
+ensure_runtime_schema()
 app = FastAPI(title="iScreeM API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -152,9 +159,48 @@ def project(project_id: str, db: Session = Depends(get_db)):
         except (OSError, ValueError, TypeError):
             pass
         proteins.append(data)
+    pocket_rows = list(db.scalars(select(Pocket).where(Pocket.project_id == project_id)))
+    proteins_by_id = {
+        protein.id: protein
+        for protein in db.scalars(select(Protein).where(Protein.project_id == project_id))
+    }
+    points_cache: dict[str, dict[int, list[list[float]]]] = {}
+    metrics_changed = False
+    for pocket in pocket_rows:
+        if (
+            pocket.volume is not None
+            and pocket.estimated_max_mw is not None
+            and pocket.volume_method == VOLUME_METHOD
+        ):
+            continue
+        protein = proteins_by_id.get(pocket.protein_id)
+        if protein is None:
+            continue
+        try:
+            if protein.id not in points_cache:
+                root = settings.data_dir / "projects" / project_id / "pockets" / f"{protein.id}_pocket"
+                points_path = find_p2rank_points(root)
+                points_cache[protein.id] = read_p2rank_points(points_path) if points_path else {}
+            points = points_cache[protein.id].get(pocket.rank, [])
+            if not points:
+                continue
+            receptor_path = resolve_data_path(protein.original_path)
+            if receptor_path is None:
+                continue
+            values = pocket_metrics(receptor_path, points)
+            pocket.points = points
+            pocket.volume = float(values["volume"])
+            pocket.estimated_max_mw = float(values["estimated_max_mw"])
+            pocket.volume_method = str(values["volume_method"])
+            metrics_changed = True
+        except (OSError, ValueError, TypeError):
+            continue
+    if metrics_changed:
+        db.commit()
+
     pockets = []
     seen_pockets = set()
-    for pocket in db.scalars(select(Pocket).where(Pocket.project_id == project_id)):
+    for pocket in pocket_rows:
         key = (pocket.protein_id, pocket.pocket_key)
         if key in seen_pockets:
             continue

@@ -22,6 +22,12 @@ from app.services.pdb import (
     write_docking_receptor,
     write_receptor_without_hetatm,
 )
+from app.services.pocket_volume import (
+    ESTIMATED_MW_PER_CUBIC_ANGSTROM,
+    calculate_pocket_volume,
+    pocket_metrics,
+    read_p2rank_points,
+)
 from app.services.sdf import split_sdf_records
 from app.services.sdf_export import append_sdf_properties
 from app.services.storage_names import docking_job_root, readable_name, unique_directory_name
@@ -37,6 +43,41 @@ def test_grid_uses_padding_and_minimum():
 def test_grid_fallback_is_marked_approximate():
     center, size, approximate = grid_from_coordinates([], {"x": 1, "y": 2, "z": 3})
     assert center["z"] == 3 and size["x"] == 18 and approximate
+
+
+def test_p2rank_points_are_grouped_by_pocket_rank(tmp_path: Path):
+    points = tmp_path / "protein_points.pdb.gz"
+    import gzip
+
+    with gzip.open(points, "wt") as handle:
+        handle.write(
+            "HETATM    1 H    STP A   1       0.000   1.000   2.000  0.50 0.900\n"
+            "HETATM    2 H    STP A   2       3.000   4.000   5.000  0.50 0.800\n"
+            "HETATM    3 H    STP A   0       6.000   7.000   8.000  0.50 0.100\n"
+        )
+
+    grouped = read_p2rank_points(points)
+
+    assert grouped == {1: [[0.0, 1.0, 2.0]], 2: [[3.0, 4.0, 5.0]]}
+
+
+def test_pocket_volume_and_estimated_mw_are_calculated(tmp_path: Path):
+    pytest.importorskip("scipy")
+    receptor = tmp_path / "receptor.pdb"
+    receptor.write_text(
+        "ATOM      1  C   ALA A   1      20.000  20.000  20.000  1.00 20.00           C  \nEND\n"
+    )
+
+    volume = calculate_pocket_volume(
+        receptor, [[0.0, 0.0, 0.0]], spacing=0.5, point_radius=2.0
+    )
+    metrics = pocket_metrics(receptor, [[0.0, 0.0, 0.0]])
+
+    assert 30.0 <= volume <= 37.0
+    assert 10.0 <= metrics["volume"] <= 16.0
+    assert metrics["estimated_max_mw"] == round(
+        metrics["volume"] * ESTIMATED_MW_PER_CUBIC_ANGSTROM, 1
+    )
 
 
 def test_sdf_split_preserves_blank_header_for_later_poses():
