@@ -1678,14 +1678,14 @@ function ProteinBottom({
                     <tr>
                       <th>Rank</th>
                       <th>Pocket</th>
+                      <th>Focus</th>
+                      <th>P2Rank points</th>
                       <th>Score</th>
                       <th>Probability</th>
                       <th>Pocket volume (Å³)</th>
                       <th>Estimated MW (Da)</th>
                       <th>Residues</th>
                       <th>Visible</th>
-                      <th>Focus</th>
-                      <th>P2Rank points</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -1705,35 +1705,6 @@ function ProteinBottom({
                             </span>
                           </td>
                           <td>Pocket {p.pocket_key}</td>
-                          <td className="font-mono">
-                            {p.score?.toFixed(3) || "—"}
-                          </td>
-                          <td className="font-mono">
-                            {p.probability?.toFixed(3) || "—"}
-                          </td>
-                          <td className="font-mono" title={p.volume_method || undefined}>
-                            {p.volume?.toFixed(1) || "—"}
-                          </td>
-                          <td
-                            className="font-mono"
-                            title="Estimated MW ceiling = 0.45 × pocket volume"
-                          >
-                            {p.estimated_max_mw?.toFixed(1) || "—"}
-                          </td>
-                          <td>{p.residues.slice(0, 4).join(", ") || "—"}</td>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={visiblePockets.has(p.id)}
-                              onChange={() => {
-                                const next = new Set(visiblePockets);
-                                next.has(p.id)
-                                  ? next.delete(p.id)
-                                  : next.add(p.id);
-                                setVisiblePockets(next);
-                              }}
-                            />
-                          </td>
                           <td>
                             <button
                               className="icon-btn"
@@ -1765,6 +1736,35 @@ function ProteinBottom({
                                 <EyeOff />
                               )}
                             </button>
+                          </td>
+                          <td className="font-mono">
+                            {p.score?.toFixed(3) || "—"}
+                          </td>
+                          <td className="font-mono">
+                            {p.probability?.toFixed(3) || "—"}
+                          </td>
+                          <td className="font-mono" title={p.volume_method || undefined}>
+                            {p.volume?.toFixed(1) || "—"}
+                          </td>
+                          <td
+                            className="font-mono"
+                            title="Estimated MW ceiling = 0.45 × pocket volume"
+                          >
+                            {p.estimated_max_mw?.toFixed(1) || "—"}
+                          </td>
+                          <td>{p.residues.slice(0, 4).join(", ") || "—"}</td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={visiblePockets.has(p.id)}
+                              onChange={() => {
+                                const next = new Set(visiblePockets);
+                                next.has(p.id)
+                                  ? next.delete(p.id)
+                                  : next.add(p.id);
+                                setVisiblePockets(next);
+                              }}
+                            />
                           </td>
                           <td>
                             <div className="flex gap-2">
