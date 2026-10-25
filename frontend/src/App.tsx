@@ -89,7 +89,8 @@ const structureLigandKey = (ligand: StructureLigand) =>
   `${ligand.chain || "*"}:${ligand.residue_number || "*"}:${ligand.name}`;
 type ViewerFocusRequest =
   | { kind: "grid"; grid: Grid; nonce: number }
-  | { kind: "ligand"; ligand: StructureLigand; nonce: number };
+  | { kind: "ligand"; ligand: StructureLigand; nonce: number }
+  | { kind: "pocket"; pocket: Pocket; nonce: number };
 const ossLicenses = [
   {
     name: "smina",
@@ -195,6 +196,9 @@ export default function App() {
   const [activeGrid, setActiveGrid] = useState<Grid>(),
     [selectedProteinId, setSelectedProteinId] = useState<string>(),
     [visiblePockets, setVisiblePockets] = useState<Set<string>>(new Set()),
+    [visiblePocketPoints, setVisiblePocketPoints] = useState<Set<string>>(
+      new Set(),
+    ),
     [visibleStructureLigands, setVisibleStructureLigands] = useState<
       Set<string>
     >(new Set()),
@@ -316,6 +320,13 @@ export default function App() {
               .map((x) => x.id),
           ),
         );
+        setVisiblePocketPoints(
+          new Set(
+            full.pockets
+              .filter((item) => item.protein_id === activeProteinId)
+              .map((x) => x.id),
+          ),
+        );
       }
     },
     [project?.id, selectedProteinId],
@@ -352,6 +363,13 @@ export default function App() {
                 : undefined,
             );
             setVisiblePockets(
+              new Set(
+                full.pockets
+                  .filter((item) => item.protein_id === activeProteinId)
+                  .map((x) => x.id),
+              ),
+            );
+            setVisiblePocketPoints(
               new Set(
                 full.pockets
                   .filter((item) => item.protein_id === activeProteinId)
@@ -404,6 +422,7 @@ export default function App() {
       setSelectedProteinId(undefined);
       setActiveGrid(undefined);
       setVisiblePockets(new Set());
+      setVisiblePocketPoints(new Set());
       localStorage.removeItem("mds.projectId");
       return;
     }
@@ -433,6 +452,13 @@ export default function App() {
             .map((x) => x.id),
         ),
       );
+      setVisiblePocketPoints(
+        new Set(
+          full.pockets
+            .filter((item) => item.protein_id === activeProteinId)
+            .map((x) => x.id),
+        ),
+      );
     } catch (e) {
       setNotice({
         type: "error",
@@ -447,6 +473,13 @@ export default function App() {
     setSelectedResidues(new Set());
     setActiveGrid(undefined);
     setVisiblePockets(
+      new Set(
+        project?.pockets
+          .filter((item) => item.protein_id === id)
+          .map((x) => x.id) || [],
+      ),
+    );
+    setVisiblePocketPoints(
       new Set(
         project?.pockets
           .filter((item) => item.protein_id === id)
@@ -572,6 +605,7 @@ export default function App() {
             grid={activeGrid}
             pockets={project?.pockets || []}
             visiblePockets={visiblePockets}
+            visiblePocketPoints={visiblePocketPoints}
             visibleStructureLigands={visibleStructureLigands}
             dockingPoses={selectedDockingPoses}
             dockingPoseFocus={dockingPoseFocus}
@@ -609,6 +643,11 @@ export default function App() {
               setSelectedResidues={setSelectedResidues}
               visiblePockets={visiblePockets}
               setVisiblePockets={setVisiblePockets}
+              visiblePocketPoints={visiblePocketPoints}
+              setVisiblePocketPoints={setVisiblePocketPoints}
+              onFocusPocket={(pocket) =>
+                setFocusRequest({ kind: "pocket", pocket, nonce: Date.now() })
+              }
               setActiveGrid={setActiveGrid}
               act={act}
               dockingResults={dockingResults}
@@ -1430,6 +1469,9 @@ function BottomPanel(props: {
   setSelectedResidues: (x: Set<string>) => void;
   visiblePockets: Set<string>;
   setVisiblePockets: (x: Set<string>) => void;
+  visiblePocketPoints: Set<string>;
+  setVisiblePocketPoints: (x: Set<string>) => void;
+  onFocusPocket: (pocket: Pocket) => void;
   setActiveGrid: (x: Grid | undefined) => void;
   act: (fn: () => Promise<unknown>, msg?: string) => void;
   dockingResults: DockingResult[];
@@ -1486,6 +1528,9 @@ function ProteinBottom({
   setSelectedResidues,
   visiblePockets,
   setVisiblePockets,
+  visiblePocketPoints,
+  setVisiblePocketPoints,
+  onFocusPocket,
   setActiveGrid,
   act,
 }: {
@@ -1499,6 +1544,9 @@ function ProteinBottom({
   setSelectedResidues: (x: Set<string>) => void;
   visiblePockets: Set<string>;
   setVisiblePockets: (x: Set<string>) => void;
+  visiblePocketPoints: Set<string>;
+  setVisiblePocketPoints: (x: Set<string>) => void;
+  onFocusPocket: (pocket: Pocket) => void;
   setActiveGrid: (x: Grid | undefined) => void;
   act: (fn: () => Promise<unknown>, msg?: string) => void;
 }) {
@@ -1636,6 +1684,7 @@ function ProteinBottom({
                       <th>Estimated MW (Da)</th>
                       <th>Residues</th>
                       <th>Visible</th>
+                      <th>P2Rank points</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -1685,7 +1734,37 @@ function ProteinBottom({
                             />
                           </td>
                           <td>
+                            <button
+                              className="icon-btn"
+                              title={
+                                visiblePocketPoints.has(p.id)
+                                  ? `Hide Pocket ${p.rank} P2Rank points`
+                                  : `Show Pocket ${p.rank} P2Rank points`
+                              }
+                              onClick={() => {
+                                const next = new Set(visiblePocketPoints);
+                                next.has(p.id)
+                                  ? next.delete(p.id)
+                                  : next.add(p.id);
+                                setVisiblePocketPoints(next);
+                              }}
+                            >
+                              {visiblePocketPoints.has(p.id) ? (
+                                <Eye />
+                              ) : (
+                                <EyeOff />
+                              )}
+                            </button>
+                          </td>
+                          <td>
                             <div className="flex gap-2">
+                              <button
+                                className="icon-btn"
+                                title={`Focus Pocket ${p.rank}`}
+                                onClick={() => onFocusPocket(p)}
+                              >
+                                <Focus />
+                              </button>
                               <button
                                 className="btn-secondary"
                                 onClick={() =>
@@ -1715,6 +1794,9 @@ function ProteinBottom({
                                     const next = new Set(visiblePockets);
                                     next.delete(p.id);
                                     setVisiblePockets(next);
+                                    const nextPoints = new Set(visiblePocketPoints);
+                                    nextPoints.delete(p.id);
+                                    setVisiblePocketPoints(nextPoints);
                                     if (activeGrid?.pocket_id === p.id)
                                       setActiveGrid(undefined);
                                   }, "Pocket and associated grids deleted")

@@ -16,9 +16,12 @@ from app.services.ligand_normalization import (
     write_validated_sdf,
 )
 from app.services.pdb import (
+    has_hetero_connectivity,
+    infer_organic_hetero_bond_orders,
     parse_pdb,
     parse_structure,
     receptor_atom_coordinates,
+    restore_hetero_connectivity,
     write_docking_receptor,
     write_receptor_without_hetatm,
 )
@@ -259,6 +262,50 @@ def test_docking_receptor_excludes_hetatm_and_dangling_conect(tmp_path: Path):
     assert "HETATM" not in written
     assert "CONECT" not in written
     assert written.endswith("TER\nEND\n")
+
+
+def test_restore_hetero_connectivity_translates_serials_and_bond_order(tmp_path: Path):
+    template = tmp_path / "fixed.pdb"
+    template.write_text(
+        "HETATM   10  C1  LIG A 101       0.000   0.000   0.000  1.00 20.00           C  \n"
+        "HETATM   11  O1  LIG A 101       1.200   0.000   0.000  1.00 20.00           O  \n"
+        "CONECT   10   11   11\nCONECT   11   10   10\nEND\n"
+    )
+    prepared = tmp_path / "prepared.pdb"
+    prepared.write_text(
+        "HETATM  201  C1  LIG A 101       0.000   0.000   0.000  1.00 20.00           C  \n"
+        "HETATM  202  O1  LIG A 101       1.200   0.000   0.000  1.00 20.00           O  \n"
+        "END\n"
+    )
+
+    count = restore_hetero_connectivity(template, prepared)
+    written = prepared.read_text()
+
+    assert count == 2
+    assert "CONECT  201  202  202" in written
+    assert "CONECT  202  201  201" in written
+    assert has_hetero_connectivity(prepared)
+
+
+def test_infer_organic_hetero_bond_orders_writes_double_bonds(tmp_path: Path):
+    pytest.importorskip("rdkit")
+    pdb = tmp_path / "ligand.pdb"
+    pdb.write_text(
+        "HETATM    1  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00           C  \n"
+        "HETATM    2  O1  LIG A   1       1.230   0.000   0.000  1.00  0.00           O  \n"
+        "HETATM    3  C2  LIG A   1      -1.500   0.000   0.000  1.00  0.00           C  \n"
+        "CONECT    1    2    3\n"
+        "CONECT    2    1\n"
+        "CONECT    3    1\nEND\n"
+    )
+
+    inferred = infer_organic_hetero_bond_orders(pdb)
+    contents = pdb.read_text()
+
+    assert inferred == 2
+    assert "CONECT    1    2    2    3" in contents
+    assert "CONECT    2    1    1" in contents
+    assert infer_organic_hetero_bond_orders(pdb) == 0
 
 
 def test_docking_receptor_keeps_only_interacting_waters(tmp_path: Path):

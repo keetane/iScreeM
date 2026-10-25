@@ -34,7 +34,13 @@ from .services.docking_csv import select_docking_results
 from .services.docking_uploads import load_docking_upload, prepare_docking_upload
 from .services.export_names import export_filename
 from .services.grids import grid_from_coordinates
-from .services.pdb import parse_structure, residue_coordinates
+from .services.pdb import (
+    has_hetero_connectivity,
+    infer_organic_hetero_bond_orders,
+    parse_structure,
+    residue_coordinates,
+    restore_hetero_connectivity,
+)
 from .services.pocket_volume import (
     VOLUME_METHOD,
     find_p2rank_points,
@@ -278,6 +284,12 @@ def protein_file(protein_id: str, db: Session = Depends(get_db)):
         source = resolve_data_path(item.original_path)
     if source is None or not source.is_file():
         raise HTTPException(404, "Protein structure file is missing")
+    if source.suffix.lower() == ".pdb" and not has_hetero_connectivity(source):
+        fixed = source.parent / "pdbfixer_fixed.pdb"
+        if fixed.is_file():
+            restore_hetero_connectivity(fixed, source)
+    if source.suffix.lower() == ".pdb" and item.prepared_path:
+        infer_organic_hetero_bond_orders(source)
     media_type = (
         "chemical/x-cif" if source.suffix.lower() in {".cif", ".mmcif"} else "chemical/x-pdb"
     )

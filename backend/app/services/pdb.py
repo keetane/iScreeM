@@ -1,6 +1,6 @@
 from collections import defaultdict
-from pathlib import Path
 from math import dist
+from pathlib import Path
 
 METALS = {"LI", "NA", "K", "MG", "CA", "MN", "FE", "CO", "NI", "CU", "ZN", "CD", "HG"}
 WATERS = {"HOH", "WAT", "DOD"}
@@ -214,6 +214,186 @@ def write_receptor_without_hetatm(source: Path, destination: Path) -> int:
     still be used by the viewer.
     """
     return write_docking_receptor(source, destination)["receptor_atom_count"]
+
+
+def _pdb_atom_identity(line: str) -> tuple[str, str, str, str, str] | None:
+    if line[:6].strip().upper() != "HETATM":
+        return None
+    return (
+        line[21:22].strip(),
+        line[22:27].strip(),
+        line[17:20].strip(),
+        line[12:16].strip(),
+        line[16:17].strip(),
+    )
+
+
+def has_hetero_connectivity(path: Path) -> bool:
+    """Return whether a PDB contains a CONECT record for a HETATM serial."""
+    lines = path.read_text(errors="replace").splitlines()
+    hetero_serials = {
+        int(line[6:11])
+        for line in lines
+        if _pdb_atom_identity(line) is not None and line[6:11].strip().isdigit()
+    }
+    return any(
+        line[:6].strip().upper() == "CONECT"
+        and line[6:11].strip().isdigit()
+        and int(line[6:11]) in hetero_serials
+        for line in lines
+    )
+
+
+def restore_hetero_connectivity(template: Path, prepared: Path) -> int:
+    """Restore HETATM bond orders removed by PDB2PQR.
+
+    PDB encodes double/triple bonds by repeating a target serial in CONECT.
+    Atom serials may change during preparation, so records are translated by
+    chain, residue, atom name, and alternate-location identity.
+    """
+    template_lines = template.read_text(errors="replace").splitlines()
+    prepared_lines = prepared.read_text(errors="replace").splitlines()
+    template_atoms: dict[int, tuple[str, str, str, str, str]] = {}
+    prepared_atoms: dict[tuple[str, str, str, str, str], int] = {}
+    for line in template_lines:
+        identity = _pdb_atom_identity(line)
+        if identity is not None and line[6:11].strip().isdigit():
+            template_atoms[int(line[6:11])] = identity
+    for line in prepared_lines:
+        identity = _pdb_atom_identity(line)
+        if identity is not None and line[6:11].strip().isdigit():
+            prepared_atoms[identity] = int(line[6:11])
+
+    translated: list[str] = []
+    for line in template_lines:
+        if line[:6].strip().upper() != "CONECT":
+            continue
+        fields = [line[index : index + 5].strip() for index in range(6, len(line), 5)]
+        if not fields or not fields[0].isdigit():
+            continue
+        source_identity = template_atoms.get(int(fields[0]))
+        source_serial = prepared_atoms.get(source_identity) if source_identity else None
+        if source_serial is None:
+            continue
+        targets = []
+        for field in fields[1:]:
+            if not field.isdigit():
+                continue
+            target_identity = template_atoms.get(int(field))
+            target_serial = prepared_atoms.get(target_identity) if target_identity else None
+            if target_serial is not None:
+                targets.append(target_serial)
+        for start in range(0, len(targets), 4):
+            chunk = targets[start : start + 4]
+            if chunk:
+                translated.append(f"CONECT{source_serial:5d}{''.join(f'{x:5d}' for x in chunk)}")
+
+    if not translated:
+        return 0
+    body = [line for line in prepared_lines if line[:6].strip().upper() not in {"CONECT", "END"}]
+    prepared.write_text("\n".join([*body, *translated, "END"]) + "\n")
+    return len(translated)
+
+
+HETERO_BOND_ORDER_REMARK = "REMARK 950 ISCREEM HETERO BOND ORDERS"
+
+
+def infer_organic_hetero_bond_orders(path: Path) -> int:
+    """Infer organic HETATM bond orders and encode them in CONECT records."""
+    lines = path.read_text(errors="replace").splitlines()
+    if HETERO_BOND_ORDER_REMARK in lines:
+        return 0
+    groups: dict[tuple[str, str, str, str], list[tuple[str, str]]] = defaultdict(list)
+    for line in lines:
+        identity = _pdb_atom_identity(line)
+        if identity is None:
+            continue
+        chain, residue_number, residue_name, _, _ = identity
+        element = (line[76:78].strip() or line[12:16].strip()[:1]).upper()
+        groups[(chain, residue_number, residue_name, line[26:27].strip())].append(
+            (line, element)
+        )
+
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDetermineBonds
+    except ImportError:
+        return 0
+
+    inferred: dict[tuple[int, int], int] = {}
+    for (_, _, residue_name, _), entries in groups.items():
+        elements = {element for _, element in entries}
+        if residue_name.upper() in WATERS | POLYMER_HETERO or "C" not in elements:
+            continue
+        block = "\n".join([*(line for line, _ in entries), "END"]) + "\n"
+        base = Chem.MolFromPDBBlock(
+            block, sanitize=False, removeHs=False, proximityBonding=True
+        )
+        if base is None:
+            continue
+        molecule = None
+        for charge in (0, -1, 1, -2, 2, -3, 3, -4, 4):
+            candidate = Chem.Mol(base)
+            try:
+                rdDetermineBonds.DetermineBondOrders(candidate, charge=charge)
+                Chem.SanitizeMol(candidate)
+                Chem.Kekulize(candidate, clearAromaticFlags=True)
+            except (ValueError, RuntimeError):
+                continue
+            molecule = candidate
+            break
+        if molecule is None:
+            continue
+        for bond in molecule.GetBonds():
+            begin_info = bond.GetBeginAtom().GetPDBResidueInfo()
+            end_info = bond.GetEndAtom().GetPDBResidueInfo()
+            if begin_info is None or end_info is None:
+                continue
+            first, second = sorted(
+                (begin_info.GetSerialNumber(), end_info.GetSerialNumber())
+            )
+            order = max(1, min(3, round(bond.GetBondTypeAsDouble())))
+            inferred[(first, second)] = order
+
+    if not inferred:
+        return 0
+
+    adjacency: dict[int, list[int]] = defaultdict(list)
+    for line in lines:
+        if line[:6].strip().upper() != "CONECT":
+            continue
+        fields = [
+            line[index : index + 5].strip() for index in range(6, len(line), 5)
+        ]
+        if not fields or not fields[0].isdigit():
+            continue
+        source = int(fields[0])
+        adjacency[source].extend(int(field) for field in fields[1:] if field.isdigit())
+
+    for (first, second), order in inferred.items():
+        adjacency[first] = [target for target in adjacency[first] if target != second]
+        adjacency[second] = [target for target in adjacency[second] if target != first]
+        adjacency[first].extend([second] * order)
+        adjacency[second].extend([first] * order)
+
+    connectivity: list[str] = []
+    for source, targets in sorted(adjacency.items()):
+        for start in range(0, len(targets), 4):
+            chunk = targets[start : start + 4]
+            if chunk:
+                connectivity.append(
+                    f"CONECT{source:5d}{''.join(f'{target:5d}' for target in chunk)}"
+                )
+    body = [
+        line
+        for line in lines
+        if line[:6].strip().upper() not in {"CONECT", "END"}
+        and line != HETERO_BOND_ORDER_REMARK
+    ]
+    path.write_text(
+        "\n".join([*body, HETERO_BOND_ORDER_REMARK, *connectivity, "END"]) + "\n"
+    )
+    return len(inferred)
 
 
 def receptor_atom_coordinates(path: Path) -> list[list[float]]:

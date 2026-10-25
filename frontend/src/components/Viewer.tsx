@@ -14,12 +14,14 @@ type Props = {
   grid?: Grid;
   pockets: Pocket[];
   visiblePockets: Set<string>;
+  visiblePocketPoints: Set<string>;
   visibleStructureLigands: Set<string>;
   dockingPoses?: { key: string; url: string; pose: number }[];
   dockingPoseFocus?: { key: string; nonce: number };
   focusRequest?:
     | { kind: "grid"; grid: Grid; nonce: number }
-    | { kind: "ligand"; ligand: StructureLigand; nonce: number };
+    | { kind: "ligand"; ligand: StructureLigand; nonce: number }
+    | { kind: "pocket"; pocket: Pocket; nonce: number };
   selectedResidues: Set<string>;
   onSelectResidue: (key: string) => void;
   onClearResidues: () => void;
@@ -85,6 +87,7 @@ export function Viewer({
   grid,
   pockets,
   visiblePockets,
+  visiblePocketPoints,
   visibleStructureLigands,
   dockingPoses = [],
   dockingPoseFocus,
@@ -392,7 +395,7 @@ export function Viewer({
           atom.z <= bounds.maxZ,
       };
       zoomSelection = neighborhood;
-    } else {
+    } else if (focusRequest.kind === "ligand") {
       const ligandSelection = structureLigandSelector(focusRequest.ligand);
       neighborhood = {
         hetflag: false,
@@ -400,14 +403,40 @@ export function Viewer({
         within: { distance: 10, sel: ligandSelection },
       };
       zoomSelection = { or: [ligandSelection, neighborhood] };
+    } else {
+      const residueSelections = focusRequest.pocket.residues
+        .map(pocketResidueSelector)
+        .filter(Boolean);
+      neighborhood = residueSelections.length
+        ? { or: residueSelections }
+        : {
+            byres: true,
+            within: {
+              distance: 6,
+              sel: {
+                predicate: (atom: any) => {
+                  const center = focusRequest.pocket.center;
+                  const dx = atom.x - center.x,
+                    dy = atom.y - center.y,
+                    dz = atom.z - center.z;
+                  return dx * dx + dy * dy + dz * dz <= 36;
+                },
+              },
+            },
+          };
+      zoomSelection = neighborhood;
     }
-    focusNeighborhood.current = neighborhood;
+    focusNeighborhood.current =
+      focusRequest.kind === "pocket" ? undefined : neighborhood;
     applyStyle();
     if (model.current.selectedAtoms(neighborhood).length)
       viewer.current.zoomTo(zoomSelection, 400);
-    else if (focusRequest.kind === "grid") {
+    else if (focusRequest.kind === "grid" || focusRequest.kind === "pocket") {
       const currentView = viewer.current.getView(),
-        center = focusRequest.grid.center;
+        center =
+          focusRequest.kind === "grid"
+            ? focusRequest.grid.center
+            : focusRequest.pocket.center;
       viewer.current.setView([
         -center.x,
         -center.y,
@@ -578,7 +607,7 @@ export function Viewer({
     if (!v) return;
     v.removeAllShapes();
     pockets
-      .filter((p) => visiblePockets.has(p.id))
+      .filter((p) => visiblePocketPoints.has(p.id))
       .forEach((p) => {
         const color = pocketColorForRank(p.rank);
         if (p.points?.length)
@@ -688,6 +717,7 @@ export function Viewer({
     grid,
     pockets,
     visiblePockets,
+    visiblePocketPoints,
     visibleStructureLigands,
     showHetero,
     showInteractions,

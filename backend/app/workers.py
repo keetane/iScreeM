@@ -18,7 +18,13 @@ from .services.ligand_normalization import (
     prepare_3d_molecule,
     write_validated_sdf,
 )
-from .services.pdb import parse_structure, receptor_atom_coordinates, write_docking_receptor
+from .services.pdb import (
+    infer_organic_hetero_bond_orders,
+    parse_structure,
+    receptor_atom_coordinates,
+    restore_hetero_connectivity,
+    write_docking_receptor,
+)
 from .services.pocket_volume import find_p2rank_points, pocket_metrics, read_p2rank_points
 from .services.protein_prep import protonate_with_pdb2pqr, repair_with_pdbfixer, write_report
 from .services.score_parser import parse_docking_scores
@@ -181,6 +187,8 @@ def prepare_receptor(job_id: str, protein_id: str):
             prepared_pdb,
             settings.pdb2pqr_command,
         )
+        restore_hetero_connectivity(fixed_pdb, prepared_pdb)
+        infer_organic_hetero_bond_orders(prepared_pdb)
         (root / "preparation.stdout.log").write_text(p2pqr.stdout)
         (root / "preparation.stderr.log").write_text(p2pqr.stderr)
         write_report(report_path, missing_residues=missing_residues, p2pqr=p2pqr, ph=7.4)
