@@ -1,12 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Camera,
-  Focus,
-  LocateFixed,
-  RotateCcw,
-  Layers3,
-  Hexagon,
-} from "lucide-react";
+import { Camera, Focus, RotateCcw, Layers3 } from "lucide-react";
 import type { Grid, Pocket, Protein, StructureLigand } from "../types";
 
 type Props = {
@@ -113,8 +106,7 @@ export function Viewer({
     [showSurface, setShowSurface] = useState(false);
   const [viewerReady, setViewerReady] = useState(false),
     [modelVersion, setModelVersion] = useState(0),
-    [poseVersion, setPoseVersion] = useState(0),
-    [hasHetero, setHasHetero] = useState(false);
+    [poseVersion, setPoseVersion] = useState(0);
 
   useEffect(() => {
     onSelectResidueRef.current = onSelectResidue;
@@ -211,7 +203,6 @@ export function Viewer({
     viewer.current.removeAllModels();
     poseModels.current.clear();
     model.current = null;
-    setHasHetero(false);
     viewer.current.render();
     const sourceFormat =
       protein.stats.source_format || protein.stats.format || "pdb";
@@ -272,15 +263,6 @@ export function Viewer({
           true,
           handleProteinClick,
         );
-        const heteroAtoms = model.current
-          .selectedAtoms({ hetflag: true })
-          .filter(
-            (atom: any) =>
-              !interactionWaterResidues.has(
-                String(atom.resn || "").toUpperCase(),
-              ),
-          );
-        setHasHetero(heteroAtoms.length > 0);
         applyStyle();
         viewer.current.zoomTo();
         viewer.current.render();
@@ -739,42 +721,6 @@ export function Viewer({
     link.download = `${timestamp}_${receptor}.png`;
     link.click();
   };
-  const focusSelected = () => {
-    if (!viewer.current) return;
-    const selections = [...selectedResidues].map(residueSelector);
-    const selection =
-      selections.length === 1
-        ? selections[0]
-        : selections.length
-          ? { or: selections }
-          : {};
-    viewer.current.center(selection, 400);
-    viewer.current.render();
-  };
-  const focusLargestHetero = () => {
-    if (!viewer.current || !model.current) return;
-    const atoms = model.current
-      .selectedAtoms({ hetflag: true })
-      .filter(
-        (atom: any) =>
-          !interactionWaterResidues.has(String(atom.resn || "").toUpperCase()),
-      );
-    const groups = new Map<string, { atom: any; count: number }>();
-    atoms.forEach((atom: any) => {
-      const key = `${atom.chain || "_"}:${atom.resi}:${atom.resn || ""}`;
-      const group = groups.get(key);
-      if (group) group.count += 1;
-      else groups.set(key, { atom, count: 1 });
-    });
-    const largest = [...groups.values()].sort((a, b) => b.count - a.count)[0];
-    if (!largest) return;
-    const selection = {
-      chain: largest.atom.chain || "_",
-      resi: largest.atom.resi,
-    };
-    viewer.current.zoomTo(selection, 400);
-    viewer.current.render();
-  };
   const handleViewerClick = () => {
     if (atomClickRef.current) {
       atomClickRef.current = false;
@@ -826,26 +772,6 @@ export function Viewer({
           }}
         >
           <Focus />
-        </button>
-        <button
-          className="icon-btn"
-          title={
-            selectedResidues.size
-              ? "Center selected residue(s)"
-              : "Select a residue first"
-          }
-          disabled={!selectedResidues.size}
-          onClick={focusSelected}
-        >
-          <LocateFixed />
-        </button>
-        <button
-          className="icon-btn"
-          title={hasHetero ? "Focus largest HETATM" : "No ligand HETATM found"}
-          disabled={!hasHetero}
-          onClick={focusLargestHetero}
-        >
-          <Hexagon />
         </button>
         <button className="icon-btn" title="Save PNG" onClick={download}>
           <Camera />

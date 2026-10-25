@@ -320,13 +320,7 @@ export default function App() {
               .map((x) => x.id),
           ),
         );
-        setVisiblePocketPoints(
-          new Set(
-            full.pockets
-              .filter((item) => item.protein_id === activeProteinId)
-              .map((x) => x.id),
-          ),
-        );
+        setVisiblePocketPoints(new Set());
       }
     },
     [project?.id, selectedProteinId],
@@ -369,13 +363,7 @@ export default function App() {
                   .map((x) => x.id),
               ),
             );
-            setVisiblePocketPoints(
-              new Set(
-                full.pockets
-                  .filter((item) => item.protein_id === activeProteinId)
-                  .map((x) => x.id),
-              ),
-            );
+            setVisiblePocketPoints(new Set());
           })
           .catch(() => {});
       }
@@ -452,13 +440,7 @@ export default function App() {
             .map((x) => x.id),
         ),
       );
-      setVisiblePocketPoints(
-        new Set(
-          full.pockets
-            .filter((item) => item.protein_id === activeProteinId)
-            .map((x) => x.id),
-        ),
-      );
+      setVisiblePocketPoints(new Set());
     } catch (e) {
       setNotice({
         type: "error",
@@ -479,13 +461,7 @@ export default function App() {
           .map((x) => x.id) || [],
       ),
     );
-    setVisiblePocketPoints(
-      new Set(
-        project?.pockets
-          .filter((item) => item.protein_id === id)
-          .map((x) => x.id) || [],
-      ),
-    );
+    setVisiblePocketPoints(new Set());
   };
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-ink text-slate-100">
@@ -1396,15 +1372,6 @@ function DockingSetup({
             />
           </div>
         </div>
-        <div className="rounded-lg border border-amber/20 bg-amber/5 p-3 text-xs text-amber-200/80">
-          Without a selected grid, Global search without grid covers the
-          complete receptor with a 4 Å margin. Organic HETATM records are
-          excluded from the docking receptor. With H2O retains only water
-          molecules within 3.6 Å of receptor N/O/S atoms. Uploaded ligands are
-          converted to 3D for this docking run and are not added to Ligand
-          Preparation. Library ligands that have not been prepared are
-          automatically normalized and converted to 3D in the docking job.
-        </div>
         <button
           disabled={!runnable}
           className="btn-primary w-full"
@@ -1509,12 +1476,7 @@ function BottomPanel(props: {
         onNotice={props.onNotice}
       />
     );
-  return (
-    <div className="p-5 text-sm text-slate-500">
-      Select a receptor and prepared ligands. Choose a saved grid for a local
-      search, or leave it unselected for Global search without grid.
-    </div>
-  );
+  return null;
 }
 
 function ProteinBottom({
