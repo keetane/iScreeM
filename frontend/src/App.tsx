@@ -1684,6 +1684,7 @@ function ProteinBottom({
                       <th>Estimated MW (Da)</th>
                       <th>Residues</th>
                       <th>Visible</th>
+                      <th>Focus</th>
                       <th>P2Rank points</th>
                       <th></th>
                     </tr>
@@ -1736,6 +1737,15 @@ function ProteinBottom({
                           <td>
                             <button
                               className="icon-btn"
+                              title={`Focus Pocket ${p.rank}`}
+                              onClick={() => onFocusPocket(p)}
+                            >
+                              <Focus />
+                            </button>
+                          </td>
+                          <td>
+                            <button
+                              className="icon-btn"
                               title={
                                 visiblePocketPoints.has(p.id)
                                   ? `Hide Pocket ${p.rank} P2Rank points`
@@ -1758,13 +1768,6 @@ function ProteinBottom({
                           </td>
                           <td>
                             <div className="flex gap-2">
-                              <button
-                                className="icon-btn"
-                                title={`Focus Pocket ${p.rank}`}
-                                onClick={() => onFocusPocket(p)}
-                              >
-                                <Focus />
-                              </button>
                               <button
                                 className="btn-secondary"
                                 onClick={() =>
