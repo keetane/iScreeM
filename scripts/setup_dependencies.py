@@ -102,8 +102,11 @@ def ensure_iscreem_environment(env_name: str, install: bool) -> tuple[bool, str]
             (
                 str(path)
                 for path in (
-                    Path("/Users/keetane/miniforge3/bin/mamba"),
-                    Path("/Users/keetane/miniforge3/bin/conda"),
+                    Path.home() / "miniforge3/bin/mamba",
+                    Path.home() / "miniforge3/bin/conda",
+                    Path.home() / "miniconda3/bin/conda",
+                    Path.home() / "anaconda3/bin/conda",
+                    Path("/opt/homebrew/Caskroom/miniforge/base/bin/conda"),
                 )
                 if path.is_file()
             ),

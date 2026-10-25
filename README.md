@@ -2,6 +2,9 @@
 
 研究用途のローカル Web アプリです。React/3Dmol.js の Viewer と FastAPI、SQLite、Redis/RQ ワーカーを組み合わせ、PDB 解析、P2Rank、リガンド調製、smina/gnina docking の実 CLI 実行を一つの画面から管理します。
 
+> **Research software:** iScreeMの計算結果は、実験的検証や専門家の確認を
+> 代替するものではありません。
+
 ## Quick start
 
 ```bash
@@ -12,9 +15,9 @@ conda run -n iScreeM uvicorn app.main:app --reload --app-dir backend --port 8000
 
 ブラウザで `http://localhost:5175` を開きます。外部 CLI はホストまたはコンテナ内の `PATH` に必要です。起動後の **System tools** 表示は実際の `--version` / `--help` probe 結果で、未検出ツールに依存する操作は無効になります。
 
-ローカル環境で外部 CLI の場所を指定する場合は `.env` の `MDS_P2RANK_COMMAND` と `MDS_SMINA_COMMAND` を設定します。今回の構成では P2Rank と smina を絶対パスで設定済みです。
+ローカル環境で外部 CLI の場所を指定する場合は `.env` の `MDS_P2RANK_COMMAND` と `MDS_SMINA_COMMAND` を設定します。公開用の `.env.example` はリポジトリ内の相対パスを例示し、個人環境の絶対パスは含みません。
 
-`scripts/setup_dependencies.py` はP2Rank・sminaの実行確認を行い、Redisが未導入ならmacOSではHomebrewでインストールし、Redisサービスを起動して `PONG` 応答まで確認します。P2Rankとsminaは公式配布物の場所を `.env` または `--p2rank` / `--smina` で指定してください。
+`scripts/setup_dependencies.py` はP2Rank・sminaの実行確認を行い、Redisが未導入ならmacOSではHomebrewでインストールし、Redisサービスを起動して `PONG` 応答まで確認します。P2Rankとsminaは公式配布物の場所を `.env` または `--p2rank` / `--smina` で指定してください。これらの実行ファイルとP2RankモデルはGitリポジトリには含まれません。
 
 `scripts/setup_dependencies.py` は、PDBFixer・OpenMM・PDB2PQR・RDKit・Meekoを含む `iScreeM` conda環境を作成または更新します。protein preparationは、PDBFixerでSEQRES由来の欠損残基・原子を補完し、PDB2PQRでpH 7.4のプロトン化を行います。欠損を削除して処理を継続するフォールバックはありません。
 
@@ -53,3 +56,14 @@ conda run -n iScreeM rq worker docking default --worker-class rq.worker.SimpleWo
 - 実行ファイル probe API（存在だけで available にしない）
 
 CLI と chemical dependencies がない環境では、その機能は実行不能として明示されます。`backend/tests` の unit test は外部 CLI を mock 化し、`pytest -m integration` は実際のツールがある場合だけ実行します。
+
+## License
+
+iScreeMの独自コードと独自アセットは[MIT License](LICENSE)で公開します。
+第三者ソフトウェアはそれぞれのライセンスに従い、MITへ再ライセンスされません。
+配布範囲、直接依存、smina/gninaのGPL対応、Redisのバージョン別条件は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)に記載しています。
+
+このリポジトリは外部CLIの実行ファイル、P2Rankモデル、分子構造、計算結果、
+ユーザープロジェクトを配布しません。将来それらを含むインストーラーやコンテナを
+配布する場合は、成果物単位で第三者ライセンスを再監査してください。

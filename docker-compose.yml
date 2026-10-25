@@ -1,6 +1,7 @@
 services:
   redis:
-    image: redis:7-alpine
+    # Redis 7.2 and earlier use the permissive BSD-3-Clause license.
+    image: redis:7.2-alpine
     command: redis-server --appendonly yes
     volumes: [redis-data:/data]
   api:

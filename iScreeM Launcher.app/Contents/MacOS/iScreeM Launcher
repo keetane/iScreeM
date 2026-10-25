@@ -3,15 +3,28 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 LOG="$ROOT/.iscreem-launcher.log"
-NODE_BIN="/Users/keetane/.nvm/versions/node/v22.17.0/bin"
-CONDA="/Users/keetane/miniforge3/bin/conda"
 TOOLS="$ROOT/tools"
 
-export PATH="$TOOLS/smina:$TOOLS/p2rank:$TOOLS/gnina:$TOOLS/redis:$PATH"
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/miniforge3/bin:$HOME/miniconda3/bin:$TOOLS/smina:$TOOLS/p2rank:$TOOLS/gnina:$TOOLS/redis:$PATH"
 export DYLD_LIBRARY_PATH="$TOOLS/redis/lib:${DYLD_LIBRARY_PATH:-}"
+
+if ! command -v npm >/dev/null 2>&1 && [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+  export NVM_DIR="$HOME/.nvm"
+  set +u
+  source "$NVM_DIR/nvm.sh"
+  set -u
+fi
+
+CONDA="${MDS_CONDA_EXECUTABLE:-$(command -v conda 2>/dev/null || true)}"
+NPM="${MDS_NPM_EXECUTABLE:-$(command -v npm 2>/dev/null || true)}"
 
 cd "$ROOT"
 touch "$LOG"
+
+if [[ -z "$CONDA" || -z "$NPM" ]]; then
+  print "iScreeM requires conda and npm in PATH (conda='$CONDA', npm='$NPM')." >>"$LOG"
+  exit 1
+fi
 
 REDIS_CLI="$TOOLS/redis/redis-cli"
 REDIS_SERVER="$TOOLS/redis/redis-server"
@@ -28,7 +41,7 @@ if ! pgrep -f 'rq worker docking default.*redis://localhost:6379/0' >/dev/null 2
 fi
 
 if ! pgrep -f 'vite.*--port 5175' >/dev/null 2>&1; then
-  (cd "$ROOT/frontend" && nohup env MDS_API_URL=http://127.0.0.1:8001 PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" run dev -- --host 127.0.0.1 --port 5175 </dev/null >>"$LOG" 2>&1) &!
+  (cd "$ROOT/frontend" && nohup env MDS_API_URL=http://127.0.0.1:8001 "$NPM" run dev -- --host 127.0.0.1 --port 5175 </dev/null >>"$LOG" 2>&1) &!
 fi
 
 for _ in {1..30}; do

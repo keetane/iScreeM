@@ -2,12 +2,13 @@
   "name": "iscreem",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@tanstack/react-table": "^8.20.6",
@@ -35,6 +36,11 @@
     "typescript": "~5.6.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5",
-    "vitest": "^2.1.8"
+    "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "immutable": "3.8.4",
+    "minimatch": "3.1.4",
+    "postcss-selector-parser": "7.1.6"
   }
 }

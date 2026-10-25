@@ -94,14 +94,14 @@ const ossLicenses = [
   {
     name: "smina",
     role: "Molecular docking engine",
-    license: "Apache-2.0 / GPL-2.0 components",
+    license: "Apache-2.0 / GPL-2.0 components; executable not distributed",
     source: "https://github.com/mwojcikowski/smina",
     licenseUrl: "https://github.com/mwojcikowski/smina/blob/master/LICENSE.GNU",
   },
   {
     name: "gnina",
     role: "CNN-scored molecular docking (Linux/WSL only)",
-    license: "Apache-2.0 / GPL-2.0; distributed binary uses GPL components",
+    license: "Apache-2.0 / GPL-2.0 components; executable not distributed",
     source: "https://github.com/gnina/gnina",
     licenseUrl: "https://github.com/gnina/gnina/blob/master/LICENSE.GNU",
   },
@@ -110,12 +110,12 @@ const ossLicenses = [
     role: "Protein pocket prediction",
     license: "MIT",
     source: "https://github.com/rdk/p2rank",
-    licenseUrl: "https://github.com/rdk/p2rank/blob/master/LICENSE.txt",
+    licenseUrl: "https://github.com/rdk/p2rank/blob/develop/LICENSE.txt",
   },
   {
     name: "Redis",
     role: "RQ job queue data store",
-    license: "Redis 8: AGPL-3.0 / RSALv2 / SSPLv1 choice",
+    license: "7.2: BSD-3-Clause; 8+: AGPL-3.0 / RSALv2 / SSPLv1",
     source: "https://github.com/redis/redis",
     licenseUrl: "https://redis.io/legal/licenses/",
   },
@@ -914,13 +914,14 @@ function RightPanel({
         <div className="panel-head">Open-source software</div>
         <div className="space-y-4 p-4 text-xs leading-5 text-slate-400">
           <p>
-            iScreeM combines the open-source projects listed below. Each project
-            remains subject to its own license and attribution requirements.
+            Original iScreeM code is available under the MIT License. The
+            projects listed below remain subject to their own licenses and are
+            not relicensed under MIT.
           </p>
           <div className="rounded-lg border border-amber/20 bg-amber/5 p-3 text-amber-100/80">
-            gnina's official pre-built executable targets Linux/WSL. It is
-            retained as an optional engine but is automatically disabled on
-            macOS.
+            This source repository does not distribute smina, gnina, Redis, or
+            P2Rank executables or P2Rank models. gnina's official pre-built
+            executable targets Linux/WSL and is disabled on macOS.
           </div>
           <p>
             This screen lists the major direct components. Transitive
