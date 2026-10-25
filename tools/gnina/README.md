@@ -1,6 +1,6 @@
 # gnina
 
-iDock is configured to call `tools/gnina/gnina`. The wrapper keeps this path
+iScreeM is configured to call `tools/gnina/gnina`. The wrapper keeps this path
 stable across platforms and reports a clear error on macOS.
 
 The upstream project currently publishes a Linux/WSL CUDA static executable;
