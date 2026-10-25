@@ -8,6 +8,7 @@ dependencies:
   - pdb2pqr
   - rdkit
   - meeko
+  - setuptools<81
   - fastapi
   - uvicorn
   - pydantic-settings
