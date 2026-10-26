@@ -223,10 +223,12 @@ export default function App() {
     project?.proteins.find((item) => item.id === selectedProteinId) ||
     project?.proteins[0];
   const selectedDockingPoses = useMemo(() => {
+    const displayedKeys = new Set(visibleResultKeys);
+    if (activePose) displayedKeys.add(activePose.key);
     return dockingResults
-      .filter((row) => visibleResultKeys.has(row.key))
+      .filter((row) => displayedKeys.has(row.key))
       .map((row) => ({ key: row.key, url: row.pose_url, pose: row.pose }));
-  }, [dockingResults, visibleResultKeys]);
+  }, [activePose, dockingResults, visibleResultKeys]);
   useEffect(() => {
     setVisibleStructureLigands(
       new Set((protein?.stats.hetero_molecules || []).map(structureLigandKey)),
@@ -2631,8 +2633,6 @@ function ResultsBottomEnhanced({
     const next = new Set(selectedKeys);
     next.has(row.key) ? next.delete(row.key) : next.add(row.key);
     setSelectedKeys(next);
-    if (!next.size) setActivePose(undefined);
-    else if (!next.has(activePose?.key || "")) setActivePose(row);
   };
   const toggleVisible = (row: DockingResult) => {
     const next = new Set(visibleKeys);
@@ -2874,8 +2874,8 @@ function ResultsBottomEnhanced({
             Docking results
           </div>
           <div className="text-xs text-slate-600">
-            Checkboxes select rows; eye buttons pin poses in the Viewer
-            independently.
+            Click a row to show its pose; click it again to hide it. Checkboxes
+            select rows, while eye buttons pin poses independently.
           </div>
           {summaryMessage && (
             <div className="mt-1 text-[10px] text-mint">{summaryMessage}</div>
