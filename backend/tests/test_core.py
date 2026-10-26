@@ -28,6 +28,7 @@ from app.services.pdb import (
     select_docking_receptor_source,
     write_docking_receptor,
     write_receptor_without_hetatm,
+    write_structure_without_residues,
 )
 from app.services.pocket_volume import (
     ESTIMATED_MW_PER_CUBIC_ANGSTROM,
@@ -382,6 +383,31 @@ def test_docking_receptor_source_falls_back_to_unprepared_original(tmp_path: Pat
     )
 
     assert selected == (original, "original_unprepared")
+
+
+def test_structure_edit_removes_selected_residue_and_water(tmp_path: Path):
+    source = tmp_path / "source.pdb"
+    destination = tmp_path / "edited.pdb"
+    source.write_text(
+        "ATOM      1  CA  ALA A   1      10.000  11.000  12.000  1.00 20.00           C  \n"
+        "ATOM      2  CA  GLY A   2      11.000  11.000  12.000  1.00 20.00           C  \n"
+        "HETATM    3  O   HOH A 101      12.000  11.000  12.000  1.00 20.00           O  \n"
+        "HETATM    4  C1  LIG A 201      13.000  11.000  12.000  1.00 20.00           C  \n"
+        "CONECT    2    4\n"
+        "CONECT    4    2\n"
+        "END\n"
+    )
+
+    stats = write_structure_without_residues(source, destination, {"A:2", "A:101"})
+    written = destination.read_text()
+
+    assert stats["removed_residue_count"] == 2
+    assert stats["residue_count"] == 1
+    assert "ALA A   1" in written
+    assert "GLY A   2" not in written
+    assert "HOH A 101" not in written
+    assert "LIG A 201" in written
+    assert "CONECT" not in written
 
 
 def test_docking_receptor_converts_unprepared_cif_to_pdb(tmp_path: Path):

@@ -54,6 +54,10 @@ class LigandQueryImport(BaseModel):
     queries: list[str] = Field(min_length=1, max_length=100)
 
 
+class ResidueDeleteRequest(BaseModel):
+    residue_keys: list[str] = Field(min_length=1, max_length=10000)
+
+
 class LigandPatch(BaseModel):
     ligand_code: str | None = Field(default=None, min_length=1, max_length=64)
     name: str | None = Field(default=None, min_length=1, max_length=255)

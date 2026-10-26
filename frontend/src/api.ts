@@ -32,6 +32,19 @@ export const api = {
     request(`/api/projects/${projectId}/proteins/${proteinId}`, {
       method: "DELETE",
     }),
+  deleteProteinResidues: (
+    projectId: string,
+    proteinId: string,
+    residueKeys: string[],
+  ) =>
+    request(
+      `/api/projects/${projectId}/proteins/${proteinId}/residues/delete`,
+      {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ residue_keys: residueKeys }),
+      },
+    ),
   predictPockets: (projectId: string, proteinId: string) =>
     request(
       `/api/projects/${projectId}/pockets/predict?protein_id=${proteinId}`,

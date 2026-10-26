@@ -1560,6 +1560,23 @@ function ProteinBottom({
       setSelectedProteinId("");
     }, "Protein and associated files deleted");
   };
+  const removeSelectedResidues = () => {
+    if (!project || !protein || selectedResidues.size === 0) return;
+    if (
+      !window.confirm(
+        `Delete ${selectedResidues.size} selected residue(s) or water molecule(s) from “${protein.name}”? The uploaded source file will be preserved.`,
+      )
+    )
+      return;
+    act(async () => {
+      await api.deleteProteinResidues(
+        project.id,
+        protein.id,
+        [...selectedResidues],
+      );
+      setSelectedResidues(new Set());
+    }, `${selectedResidues.size} selected residue(s) deleted`);
+  };
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     upload(event.dataTransfer.files?.[0]);
@@ -1649,6 +1666,7 @@ function ProteinBottom({
               }
               selectedResidues={selectedResidues}
               setSelectedResidues={setSelectedResidues}
+              onDeleteSelected={removeSelectedResidues}
             />
             <div>
               <div className="mb-3 flex items-center justify-between">
@@ -1831,11 +1849,13 @@ function SequencePanel({
   pockets,
   selectedResidues,
   setSelectedResidues,
+  onDeleteSelected,
 }: {
   protein: Project["proteins"][number];
   pockets: Pocket[];
   selectedResidues: Set<string>;
   setSelectedResidues: (x: Set<string>) => void;
+  onDeleteSelected: () => void;
 }) {
   const dragSelection = useRef({
     active: false,
@@ -1902,6 +1922,24 @@ function SequencePanel({
         }) as ChainSequence,
     );
   const waters = protein.stats.water_molecules || [];
+  const sequenceByChain = new Map(sequences.map((chain) => [chain.id, chain]));
+  const watersByChain = new Map<string, StructureLigand[]>();
+  waters.forEach((water) => {
+    const chain = water.chain || "_";
+    watersByChain.set(chain, [...(watersByChain.get(chain) || []), water]);
+  });
+  const chainIds = [...new Set([...sequenceByChain.keys(), ...watersByChain.keys()])].sort();
+  const chainRows = chainIds.map((id) => ({
+    id,
+    residues: sequenceByChain.get(id)?.residues || [],
+    waters: (watersByChain.get(id) || []).sort((left, right) =>
+      String(left.residue_number || "").localeCompare(
+        String(right.residue_number || ""),
+        undefined,
+        { numeric: true },
+      ),
+    ),
+  }));
   const pocketRanks = new Map<string, number>();
   pockets.forEach((pocket) =>
     pocket.residues.forEach((value) => {
@@ -1917,48 +1955,74 @@ function SequencePanel({
   return (
     <div>
       <div className="mb-3 flex items-center justify-between">
-        <div className="text-xs font-semibold uppercase tracking-[.18em] text-slate-500">
-          Amino acid sequences
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[.18em] text-slate-500">
+            Amino acid sequences
+          </div>
+          <div className="mt-1 text-xs text-slate-600">
+            Select residues in the sequence or viewer
+          </div>
         </div>
-        <div className="text-xs text-slate-600">
-          Select residues in the sequence or viewer
-        </div>
+        <button
+          className="btn-secondary text-red-300"
+          disabled={selectedResidues.size === 0}
+          onClick={onDeleteSelected}
+        >
+          <Trash2 />
+          Delete selected
+        </button>
       </div>
       <div className="space-y-3">
-        {sequences.map((chain) => (
-          <div
-            className="rounded-lg border border-line bg-ink/30 p-3"
-            key={chain.id}
-          >
+        {chainRows.map((chain) => {
+          const items = [
+            ...chain.residues.map((residue) => ({
+              ...residue,
+              kind: "residue" as const,
+              key: `${chain.id}:${residue.number}`,
+            })),
+            ...chain.waters.map((water) => ({
+              name: water.name,
+              number: water.residue_number || "",
+              one_letter: "o",
+              kind: "water" as const,
+              key: `${chain.id}:${water.residue_number || ""}`,
+            })),
+          ];
+          return (
+            <div
+              className="rounded-lg border border-line bg-ink/30 p-3"
+              key={chain.id}
+            >
             <div className="mb-2 flex items-center gap-2 text-xs text-slate-400">
               <span className="font-semibold text-cyan">Chain {chain.id}</span>
               <span className="font-mono text-slate-600">
                 {chain.residues.length} residues
+                {chain.waters.length > 0 && ` · ${chain.waters.length} waters`}
               </span>
             </div>
             <div className="overflow-x-auto pb-1">
               <div className="min-w-max font-mono text-xs">
                 <div className="flex text-[9px] text-slate-600">
-                  {chain.residues.map((residue, index) => (
+                  {items.map((item, index) => (
                     <span
                       className="w-[1ch] shrink-0 text-center"
-                      key={`${chain.id}-${residue.number}-label`}
+                      key={`${item.key}-label`}
                     >
-                      {(index + 1) % 10 === 0 ? residue.number : ""}
+                      {(index + 1) % 10 === 0 ? item.number : ""}
                     </span>
                   ))}
                 </div>
                 <div className="flex">
-                  {chain.residues.map((residue, index) => {
-                    const key = `${chain.id}:${residue.number}`;
+                  {items.map((item) => {
+                    const key = item.key;
                     const selected = selectedResidues.has(key);
-                    const rank = pocketRanks.get(key);
+                    const rank = item.kind === "residue" ? pocketRanks.get(key) : undefined;
                     return (
                       <button
                         key={key}
-                        title={`${residue.name} ${residue.number}`}
-                        aria-label={`Chain ${chain.id} residue ${residue.number} ${residue.name}`}
-                        className={`w-[1ch] shrink-0 select-none rounded py-1 text-center transition ${selected ? "bg-white text-ink" : "hover:bg-cyan/20"}`}
+                        title={`${item.kind === "water" ? "Water" : item.name} ${item.number}`}
+                        aria-label={`${item.kind === "water" ? "Water" : `Chain ${chain.id} residue`} ${item.number} ${item.name}`}
+                        className={`w-[1ch] shrink-0 select-none rounded py-1 text-center transition ${selected ? "bg-white text-ink" : item.kind === "water" ? "text-cyan hover:bg-cyan/20" : "hover:bg-cyan/20"}`}
                         style={
                           selected
                             ? undefined
@@ -1977,7 +2041,7 @@ function SequencePanel({
                           }
                         }}
                       >
-                        {residue.one_letter}
+                        {item.one_letter}
                       </button>
                     );
                   })}
@@ -1985,42 +2049,8 @@ function SequencePanel({
               </div>
             </div>
           </div>
-        ))}
-        {waters.length > 0 && (
-          <div className="rounded-lg border border-line bg-ink/30 p-3">
-            <div className="mb-2 flex items-center gap-2 text-xs text-slate-400">
-              <span className="font-semibold text-cyan">Water</span>
-              <span className="font-mono text-slate-600">
-                {waters.length} molecules · {protein.stats.water_atom_count} atoms
-              </span>
-            </div>
-            <div className="flex max-h-24 flex-wrap gap-1 overflow-auto">
-              {waters.map((water) => {
-                const key = `${water.chain || "_"}:${water.residue_number || ""}`;
-                const selected = selectedResidues.has(key);
-                return (
-                  <button
-                    key={`${key}:${water.name}`}
-                    type="button"
-                    title={`${water.name} ${water.chain || "_"}:${water.residue_number || ""}`}
-                    aria-label={`Water ${water.chain || "_"} ${water.residue_number || ""}`}
-                    className={`select-none rounded border px-1.5 py-1 font-mono text-[10px] transition ${selected ? "border-white bg-white text-ink" : "border-cyan/20 text-cyan hover:bg-cyan/20"}`}
-                    onPointerDown={(event) => beginDragSelection(event, key)}
-                    onPointerEnter={() => applyDragSelection(key)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        toggleByKeyboard(key);
-                      }
-                    }}
-                  >
-                    {water.chain || "_"}:{water.residue_number || "?"}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
+          );
+        })}
       </div>
     </div>
   );

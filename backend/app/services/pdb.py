@@ -164,6 +164,88 @@ def parse_pdb(path: Path) -> dict:
     }
 
 
+def write_structure_without_residues(
+    source: Path,
+    destination: Path,
+    residue_keys: set[str],
+) -> dict:
+    """Write a PDB copy without the selected chain/residue pairs."""
+    selectors = {
+        (chain or "_", number)
+        for key in residue_keys
+        if ":" in key
+        for chain, number in [key.split(":", 1)]
+    }
+    if not selectors:
+        raise ValueError("Select at least one residue or water molecule")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    removed_residues: set[tuple[str, str]] = set()
+
+    if source.suffix.lower() in {".cif", ".mmcif"}:
+        try:
+            import gemmi
+        except ImportError as exc:
+            raise ValueError("CIF/mmCIF editing requires the gemmi package") from exc
+        structure = gemmi.read_structure(str(source))
+        for model in structure:
+            for chain in model:
+                chain_id = chain.name or "_"
+                for index in range(len(chain) - 1, -1, -1):
+                    residue = chain[index]
+                    key = (chain_id, str(residue.seqid.num))
+                    if key in selectors:
+                        removed_residues.add(key)
+                        del chain[index]
+        if not removed_residues:
+            raise ValueError("None of the selected residues were found in the structure")
+        structure.write_pdb(str(destination))
+    else:
+        lines = source.read_text(errors="replace").splitlines(keepends=True)
+        deleted_atom_serials: set[int] = set()
+        kept: list[str] = []
+        for line in lines:
+            record = line[:6].strip()
+            if record in {"ATOM", "HETATM", "ANISOU", "TER"}:
+                chain = line[21:22].strip() or "_"
+                number = line[22:27].strip()
+                if (chain, number) in selectors:
+                    removed_residues.add((chain, number))
+                    if record in {"ATOM", "HETATM"}:
+                        try:
+                            deleted_atom_serials.add(int(line[6:11]))
+                        except ValueError:
+                            pass
+                    continue
+            kept.append(line)
+        if not removed_residues:
+            raise ValueError("None of the selected residues were found in the structure")
+        filtered: list[str] = []
+        for line in kept:
+            if line[:6].strip() != "CONECT":
+                filtered.append(line)
+                continue
+            try:
+                serials = [
+                    int(line[index : index + 5])
+                    for index in range(6, len(line.rstrip("\r\n")), 5)
+                    if line[index : index + 5].strip()
+                ]
+            except ValueError:
+                continue
+            if not serials or serials[0] in deleted_atom_serials:
+                continue
+            serials = [serials[0], *[x for x in serials[1:] if x not in deleted_atom_serials]]
+            if len(serials) > 1:
+                filtered.append("CONECT" + "".join(f"{value:5d}" for value in serials) + "\n")
+        destination.write_text("".join(filtered))
+
+    stats = parse_structure(destination)
+    if stats["residue_count"] < 1:
+        destination.unlink(missing_ok=True)
+        raise ValueError("Deleting every amino-acid residue is not allowed")
+    return {**stats, "removed_residue_count": len(removed_residues)}
+
+
 def select_docking_receptor_source(
     candidates: list[tuple[str, Path | None]],
 ) -> tuple[Path, str] | None:

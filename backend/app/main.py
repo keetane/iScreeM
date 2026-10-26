@@ -29,6 +29,7 @@ from .schemas import (
     ProjectCreate,
     ProjectOut,
     PseExportRequest,
+    ResidueDeleteRequest,
     SmilesLigand,
 )
 from .services.commands import all_tools
@@ -43,6 +44,7 @@ from .services.pdb import (
     residue_coordinates,
     restore_hetero_connectivity,
     select_docking_receptor_source,
+    write_structure_without_residues,
 )
 from .services.pocket_volume import (
     VOLUME_METHOD,
@@ -55,7 +57,12 @@ from .services.queue import queue
 from .services.score_parser import parse_docking_scores
 from .services.sdf import split_sdf_records
 from .services.sdf_export import append_sdf_properties
-from .services.storage_names import docking_job_root, unique_database_id, unique_directory_name
+from .services.storage_names import (
+    docking_job_root,
+    readable_name,
+    unique_database_id,
+    unique_directory_name,
+)
 
 settings.prepare()
 Base.metadata.create_all(engine)
@@ -298,6 +305,63 @@ def protein_file(protein_id: str, db: Session = Depends(get_db)):
         "chemical/x-cif" if source.suffix.lower() in {".cif", ".mmcif"} else "chemical/x-pdb"
     )
     return FileResponse(source, media_type=media_type, filename=source.name)
+
+
+@app.post("/api/projects/{project_id}/proteins/{protein_id}/residues/delete")
+def delete_protein_residues(
+    project_id: str,
+    protein_id: str,
+    body: ResidueDeleteRequest,
+    db: Session = Depends(get_db),
+):
+    protein = db.get(Protein, protein_id)
+    if not protein or protein.project_id != project_id:
+        raise HTTPException(404, "Protein not found")
+    active = list(db.scalars(select(DockingJob).where(DockingJob.project_id == project_id)))
+    if any(
+        job.status
+        in {JobStatus.QUEUED, JobStatus.PREPARING, JobStatus.RUNNING, JobStatus.POSTPROCESSING}
+        and (job.parameters or {}).get("protein_id") == protein_id
+        for job in active
+    ):
+        raise HTTPException(409, "Protein has an active job; wait for it to finish before editing")
+    source = resolve_data_path(protein.prepared_path)
+    if source is None or not source.is_file():
+        source = resolve_data_path(protein.original_path)
+    if source is None or not source.is_file():
+        raise HTTPException(404, "Protein structure file is missing")
+
+    parent = settings.data_dir / "projects" / project_id / "receptor" / protein_id
+    base = readable_name(f"{protein.name}_edited")
+    destination = parent / f"{base}.pdb"
+    suffix = 2
+    while destination.exists():
+        destination = parent / f"{base}_{suffix:02d}.pdb"
+        suffix += 1
+    try:
+        stats = write_structure_without_residues(
+            source,
+            destination,
+            set(body.residue_keys),
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    removed = int(stats.pop("removed_residue_count"))
+    protein.original_path = str(destination)
+    protein.prepared_path = None
+    protein.prepared_receptor_path = None
+    protein.stats = {
+        **stats,
+        "editing": {
+            "source": str(source),
+            "removed_residue_count": removed,
+            "selected_residues": body.residue_keys,
+        },
+    }
+    db.commit()
+    db.refresh(protein)
+    return {"removed_residue_count": removed, "protein": serialize(protein)}
 
 
 @app.delete("/api/projects/{project_id}/proteins/{protein_id}")
