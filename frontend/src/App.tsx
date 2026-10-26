@@ -60,7 +60,7 @@ const KetcherDialog = lazy(() =>
   })),
 );
 
-type Tab = "protein" | "ligands" | "setup" | "results" | "jobs" | "licenses";
+type Tab = "protein" | "ligands" | "docking" | "jobs" | "licenses";
 const AlphaHelix = (props: LucideProps) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
     <path d="M7 3c6 0 10 3 10 6s-4 6-10 6" />
@@ -71,8 +71,7 @@ const AlphaHelix = (props: LucideProps) => (
 const tabs: { id: Tab; label: string; icon: ComponentType<LucideProps> }[] = [
   { id: "protein", label: "Protein & Pocket", icon: AlphaHelix },
   { id: "ligands", label: "Ligand Preparation", icon: Hexagon },
-  { id: "setup", label: "Docking Setup", icon: Workflow },
-  { id: "results", label: "Docking Results", icon: Database },
+  { id: "docking", label: "Docking", icon: Workflow },
   { id: "jobs", label: "Job Monitor", icon: Activity },
   { id: "licenses", label: "OSS / Licenses", icon: Scale },
 ];
@@ -234,7 +233,7 @@ export default function App() {
     );
   }, [protein?.id]);
   useEffect(() => {
-    if (tab !== "results" || !project) return;
+    if (tab !== "docking" || !project) return;
     api
       .dockingResults(project.id)
       .then((rows) => {
@@ -1006,7 +1005,7 @@ function RightPanel({
       </>
     );
   if (tab === "ligands") return <LigandInput project={project} act={act} />;
-  if (tab === "setup")
+  if (tab === "docking")
     return (
       <DockingSetup
         project={project}
@@ -1017,16 +1016,6 @@ function RightPanel({
         selectedResidues={selectedResidues}
         act={act}
       />
-    );
-  if (tab === "results")
-    return (
-      <>
-        <div className="panel-head">Result Display</div>
-        <div className="p-4 text-sm text-slate-400">
-          Completed docking poses are retained under each job directory. Score
-          columns are never synthesized when the engine does not report them.
-        </div>
-      </>
     );
   return (
     <>
@@ -1143,7 +1132,7 @@ function LigandInput({
   act: (fn: () => Promise<unknown>, msg?: string) => void;
 }) {
   const [text, setText] = useState(
-    "aspirin\ncaffeine\nCC(C)CC1=CC=C(C=C1)C(C)C(=O)O ibuprofen",
+    "aspirin\ncaffeine\nCC(C)CC1=CC=C(C=C1)C(C)C(=O)O",
   ),
     [file, setFile] = useState<File>(),
     [showKetcher, setShowKetcher] = useState(false);
@@ -1502,7 +1491,7 @@ function BottomPanel(props: {
   if (tab === "ligands") return <LigandBottom {...props} />;
   if (tab === "jobs") return <JobsBottom jobs={jobs} act={props.act} />;
   if (tab === "licenses") return <LicensesBottom />;
-  if (tab === "results")
+  if (tab === "docking")
     return (
       <ResultsBottomEnhanced
         project={project}
