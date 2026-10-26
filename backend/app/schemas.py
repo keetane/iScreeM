@@ -80,7 +80,8 @@ class DockingRequest(BaseModel):
     grid_id: str | None = None
     ligand_ids: list[str] = Field(default_factory=list)
     upload_ids: list[str] = Field(default_factory=list)
-    with_h2o: bool = False
+    with_selected_h2o: bool = False
+    selected_h2o: list[str] = Field(default_factory=list, max_length=10000)
     engine: Literal["smina", "gnina"]
     exhaustiveness: int | None = Field(default=None, ge=1, le=1024)
     num_modes: int = Field(default=3, ge=1, le=100)

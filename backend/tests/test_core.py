@@ -431,6 +431,26 @@ def test_docking_receptor_keeps_only_interacting_waters(tmp_path: Path):
     assert "ATP" not in written
 
 
+def test_docking_receptor_keeps_only_selected_waters(tmp_path: Path):
+    source = tmp_path / "prepared.pdb"
+    destination = tmp_path / "receptor_with_selected_water.pdb"
+    source.write_text(
+        "ATOM      1  O   SER A   1      10.000  10.000  10.000  1.00 20.00           O  \n"
+        "HETATM    2  O   HOH A 101      12.800  10.000  10.000  1.00 20.00           O  \n"
+        "HETATM    3  O   HOH A 102      30.000  30.000  30.000  1.00 20.00           O  \n"
+        "HETATM    4  C1  ATP A 201      11.000  10.000  10.000  1.00 20.00           C  \n"
+        "END\n"
+    )
+
+    stats = write_docking_receptor(source, destination, selected_waters={"A:102"})
+    written = destination.read_text()
+
+    assert stats == {"receptor_atom_count": 1, "water_atom_count": 1, "water_residue_count": 1}
+    assert "A 101" not in written
+    assert "A 102" in written
+    assert "ATP" not in written
+
+
 def test_docking_receptor_source_falls_back_to_unprepared_original(tmp_path: Path):
     original = tmp_path / "original.pdb"
     original.write_text("ATOM\n")

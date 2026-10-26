@@ -256,12 +256,19 @@ def select_docking_receptor_source(
     return None
 
 
-def write_docking_receptor(source: Path, destination: Path, keep_interacting_waters: bool = False, contact_distance: float = 3.6) -> dict[str, int]:
+def write_docking_receptor(
+    source: Path,
+    destination: Path,
+    keep_interacting_waters: bool = False,
+    contact_distance: float = 3.6,
+    selected_waters: set[str] | None = None,
+) -> dict[str, int]:
     """Write the receptor used for docking without organic HETATM records.
 
-    When requested, complete water residues having a polar contact to a
-    receptor N/O/S atom are retained.  Other HETATM and all CONECT records are
-    discarded so dangling bonds cannot leak into the docking input.
+    When ``selected_waters`` is provided, only those ``chain:residue`` water
+    residues are retained. The interaction-based option remains for legacy
+    jobs created before explicit water selection was introduced. Other HETATM
+    and all CONECT records are discarded.
     """
     if source.suffix.lower() in {".cif", ".mmcif"}:
         try:
@@ -292,7 +299,13 @@ def write_docking_receptor(source: Path, destination: Path, keep_interacting_wat
             key = (line[17:20].strip(), line[21:22].strip(), line[22:26].strip(), line[26:27].strip())
             waters.setdefault(key, []).append((line, xyz, element))
     retained = set()
-    if keep_interacting_waters:
+    if selected_waters is not None:
+        retained = {
+            key
+            for key in waters
+            if f"{key[1] or '_'}:{key[2]}" in selected_waters
+        }
+    elif keep_interacting_waters:
         for key, atoms in waters.items():
             if any(element in {"N", "O", "S"} and any(dist(xyz, receptor) <= contact_distance for receptor in receptor_polar) for _, xyz, element in atoms):
                 retained.add(key)

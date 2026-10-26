@@ -821,6 +821,17 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
     )
     if len(ligands) != len(set(body.ligand_ids)):
         raise HTTPException(404, "One or more selected ligands were not found")
+    selected_h2o = list(dict.fromkeys(body.selected_h2o)) if body.with_selected_h2o else []
+    if body.with_selected_h2o:
+        available_h2o = {
+            f"{water.get('chain') or '_'}:{water.get('residue_number') or ''}"
+            for water in (protein.stats or {}).get("water_molecules", [])
+        }
+        if not selected_h2o:
+            raise HTTPException(422, "Select at least one water molecule")
+        unknown_h2o = sorted(set(selected_h2o) - available_h2o)
+        if unknown_h2o:
+            raise HTTPException(422, f"Selected water molecule was not found: {unknown_h2o[0]}")
     uploaded_ligands: list[dict] = []
     project_root = (settings.data_dir / "projects" / project_id).resolve()
     try:
@@ -829,6 +840,7 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     snapshot = body.model_dump(exclude_none=True)
+    snapshot["selected_h2o"] = selected_h2o
     snapshot["search_mode"] = "grid" if grid else "global_without_grid"
     snapshot["receptor_preparation"] = receptor_preparation
     snapshot["uploaded_ligands"] = uploaded_ligands

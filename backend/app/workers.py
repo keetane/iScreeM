@@ -327,12 +327,22 @@ def run_docking(job_id: str):
         if receptor_selection is None:
             raise ValueError("Protein structure file is missing")
         receptor_source, receptor_preparation = receptor_selection
-        keep_waters = bool(params.get("with_h2o", False))
+        uses_selected_h2o = "with_selected_h2o" in params
+        keep_selected_h2o = bool(params.get("with_selected_h2o", False))
+        selected_h2o = set(params.get("selected_h2o") or []) if keep_selected_h2o else set()
+        legacy_interacting_h2o = bool(params.get("with_h2o", False)) if not uses_selected_h2o else False
         receptor_input = job_root / (
-            "receptor_with_interacting_h2o.pdb" if keep_waters else "receptor_no_hetatm.pdb"
+            "receptor_with_selected_h2o.pdb"
+            if keep_selected_h2o
+            else "receptor_with_interacting_h2o.pdb"
+            if legacy_interacting_h2o
+            else "receptor_no_hetatm.pdb"
         )
         receptor_stats = write_docking_receptor(
-            receptor_source, receptor_input, keep_interacting_waters=keep_waters
+            receptor_source,
+            receptor_input,
+            keep_interacting_waters=legacy_interacting_h2o,
+            selected_waters=selected_h2o if uses_selected_h2o else None,
         )
         if grid:
             search_center, search_size, search_mode = grid.center, grid.size, "grid"
@@ -354,7 +364,8 @@ def run_docking(job_id: str):
                 "search_center": search_center,
                 "search_size": search_size,
                 "exclude_organic_hetatm": True,
-                "with_h2o": bool(params.get("with_h2o", False)),
+                "with_selected_h2o": keep_selected_h2o,
+                "selected_h2o": sorted(selected_h2o),
                 "receptor_source": str(receptor_source),
                 "receptor_preparation": receptor_preparation,
                 "receptor_used": str(receptor_input),

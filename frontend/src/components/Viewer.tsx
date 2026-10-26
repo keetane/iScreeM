@@ -538,7 +538,7 @@ export function Viewer({
       model.current.setStyle(
         residueSelector(key),
         selectedWaterKeys.has(key)
-          ? { sphere: { colorscheme: "Jmol", scale: 0.4 } }
+          ? { sphere: { color: "#3b82f6", scale: 0.48 } }
           : {
               cartoon: { color: "#ffffff" },
               line: { color: "#ffffff", linewidth: 1 },

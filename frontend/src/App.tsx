@@ -600,6 +600,7 @@ export default function App() {
               busy={busy}
               act={act}
               selectedLigands={selectedLigands}
+              selectedResidues={selectedResidues}
             />
           </aside>
           <section className="panel col-span-3 min-h-0 overflow-y-auto overscroll-contain">
@@ -914,6 +915,7 @@ function RightPanel({
   busy,
   act,
   selectedLigands,
+  selectedResidues,
 }: {
   tab: Tab;
   project?: Project;
@@ -924,6 +926,7 @@ function RightPanel({
   busy: boolean;
   act: (fn: () => Promise<unknown>, msg?: string) => void;
   selectedLigands: Set<string>;
+  selectedResidues: Set<string>;
 }) {
   if (tab === "licenses")
     return (
@@ -1011,6 +1014,7 @@ function RightPanel({
         grid={grid}
         tools={tools}
         selectedLigands={selectedLigands}
+        selectedResidues={selectedResidues}
         act={act}
       />
     );
@@ -1240,6 +1244,7 @@ function DockingSetup({
   grid,
   tools,
   selectedLigands,
+  selectedResidues,
   act,
 }: {
   project: Project;
@@ -1247,6 +1252,7 @@ function DockingSetup({
   grid?: Grid;
   tools: Record<string, Tool>;
   selectedLigands: Set<string>;
+  selectedResidues: Set<string>;
   act: (fn: () => Promise<unknown>, msg?: string) => void;
 }) {
   const [engine, setEngine] = useState<"smina" | "gnina">("smina"),
@@ -1260,6 +1266,15 @@ function DockingSetup({
     (total, batch) => total + batch.ligands.length,
     0,
   );
+  const waterKeys = new Set(
+    (protein?.stats.water_molecules || []).map(
+      (water) => `${water.chain || "_"}:${water.residue_number || ""}`,
+    ),
+  );
+  const selectedH2O = [...selectedResidues].filter((key) => waterKeys.has(key));
+  useEffect(() => {
+    if (selectedH2O.length === 0 && withH2O) setWithH2O(false);
+  }, [selectedH2O.length, withH2O]);
   const runnable =
     !!tools[engine]?.available &&
     !!protein &&
@@ -1357,9 +1372,10 @@ function DockingSetup({
                 <input
                   type="checkbox"
                   checked={withH2O}
+                  disabled={selectedH2O.length === 0}
                   onChange={(event) => setWithH2O(event.target.checked)}
                 />
-                with H2O
+                with selected H2O ({selectedH2O.length})
               </label>
               <div>
                 <div className="label">Seed</div>
@@ -1409,7 +1425,8 @@ function DockingSetup({
                   ...(grid ? { grid_id: grid.id } : {}),
                   ligand_ids: [...selectedLigands],
                   upload_ids: uploads.map((batch) => batch.upload_id),
-                  with_h2o: withH2O,
+                  with_selected_h2o: withH2O,
+                  selected_h2o: withH2O ? selectedH2O : [],
                   engine,
                   exhaustiveness,
                   num_modes: modes,
@@ -2022,7 +2039,7 @@ function SequencePanel({
                         key={key}
                         title={`${item.kind === "water" ? "Water" : item.name} ${item.number}`}
                         aria-label={`${item.kind === "water" ? "Water" : `Chain ${chain.id} residue`} ${item.number} ${item.name}`}
-                        className={`w-[1ch] shrink-0 select-none rounded py-1 text-center transition ${selected ? "bg-white text-ink" : item.kind === "water" ? "text-cyan hover:bg-cyan/20" : "hover:bg-cyan/20"}`}
+                        className={`w-[1ch] shrink-0 select-none rounded py-1 text-center transition ${selected ? item.kind === "water" ? "bg-blue-500 text-white" : "bg-white text-ink" : item.kind === "water" ? "text-cyan hover:bg-cyan/20" : "hover:bg-cyan/20"}`}
                         style={
                           selected
                             ? undefined
