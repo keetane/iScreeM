@@ -520,9 +520,11 @@ export function Viewer({
       cartoon: { color: "#8ccbd4" },
     });
     if (focusNeighborhood.current)
-      model.current.addStyle?.(focusNeighborhood.current, {
-        line: { color: "#f3b84b", linewidth: 2 },
-      });
+      model.current.setStyle(
+        focusNeighborhood.current,
+        { line: { color: "#f3b84b", linewidth: 2 } },
+        true,
+      );
     model.current.setStyle(
       waterResidues,
       showWater ? { sphere: { colorscheme: "Jmol", scale: 0.35 } } : {},
@@ -533,7 +535,7 @@ export function Viewer({
       ),
     );
     selectedResidues.forEach((key) =>
-      model.current.addStyle(
+      model.current.setStyle(
         residueSelector(key),
         selectedWaterKeys.has(key)
           ? { sphere: { colorscheme: "Jmol", scale: 0.4 } }
@@ -541,6 +543,7 @@ export function Viewer({
               cartoon: { color: "#ffffff" },
               line: { color: "#ffffff", linewidth: 1 },
             },
+        true,
       ),
     );
     if (showSurface && surfaceType.current !== undefined) {
