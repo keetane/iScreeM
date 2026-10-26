@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -8,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services import pubchem
+from app.services import commands, pubchem
 from app.services.docking import DockingInput, GninaAdapter, SminaAdapter
 from app.services.docking_csv import select_docking_results
 from app.services.export_names import export_filename
@@ -45,6 +46,19 @@ from app.services.pubchem import resolve_ligand_queries
 from app.services.sdf import split_sdf_records
 from app.services.sdf_export import append_sdf_properties
 from app.services.storage_names import docking_job_root, readable_name, unique_directory_name
+
+
+def test_command_resolution_falls_back_to_active_python_environment(tmp_path: Path, monkeypatch):
+    environment_bin = tmp_path / "env" / "bin"
+    environment_bin.mkdir(parents=True)
+    python = environment_bin / "python"
+    executable = environment_bin / "pdb2pqr"
+    python.touch()
+    executable.touch(mode=0o755)
+    monkeypatch.setattr(commands.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(sys, "executable", str(python))
+
+    assert commands.resolve_command("pdb2pqr") == str(executable)
 
 
 def test_receptor_repair_skips_terminal_gaps_and_records_internal_residue_ids():
