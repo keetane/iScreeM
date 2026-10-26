@@ -326,6 +326,11 @@ export default function App() {
   useEffect(() => {
     refresh().catch((e) => setNotice({ type: "error", text: e.message }));
   }, []);
+  useEffect(() => {
+    if (!notice || notice.type === "error") return;
+    const timeout = window.setTimeout(() => setNotice(undefined), 4000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
   const terminalJobs = useRef<Record<string, string>>({});
   useEffect(() => {
     const source = new EventSource("/api/jobs/events");
@@ -513,17 +518,23 @@ export default function App() {
       </header>
       {notice && (
         <div
-          className={`mx-5 mt-3 flex items-center justify-between rounded-lg border px-4 py-2 text-sm ${notice.type === "error" ? "border-red-500/30 bg-red-500/10 text-red-200" : "border-cyan/30 bg-cyan/10 text-cyan"}`}
+          role={notice.type === "error" ? "alert" : "status"}
+          aria-live={notice.type === "error" ? "assertive" : "polite"}
+          className={`fixed right-5 top-20 z-[80] flex w-[min(420px,calc(100vw-2.5rem))] items-center justify-between gap-4 rounded-lg border px-4 py-3 text-sm shadow-2xl backdrop-blur-md ${notice.type === "error" ? "border-red-500/40 bg-[#24131b]/95 text-red-200" : "border-cyan/40 bg-[#0b2530]/95 text-cyan"}`}
         >
-          <span className="flex items-center gap-2">
+          <span className="flex min-w-0 items-center gap-2">
             {notice.type === "error" ? (
-              <AlertTriangle className="h-4 w-4" />
+              <AlertTriangle className="h-4 w-4 shrink-0" />
             ) : (
-              <CircleDotDashed className="h-4 w-4" />
+              <CircleDotDashed className="h-4 w-4 shrink-0" />
             )}
-            {notice.text}
+            <span className="break-words">{notice.text}</span>
           </span>
-          <button onClick={() => setNotice(undefined)}>
+          <button
+            className="shrink-0 rounded p-1 transition hover:bg-white/10"
+            aria-label="Dismiss notification"
+            onClick={() => setNotice(undefined)}
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
