@@ -1138,9 +1138,7 @@ function LigandInput({
   project: Project;
   act: (fn: () => Promise<unknown>, msg?: string) => void;
 }) {
-  const [text, setText] = useState(
-      "CC(=O)Oc1ccccc1C(=O)O aspirin\nCn1cnc2n(C)c(=O)n(C)c(=O)c12 caffeine",
-    ),
+  const [text, setText] = useState("aspirin\ncaffeine"),
     [file, setFile] = useState<File>(),
     [showKetcher, setShowKetcher] = useState(false);
   const importItems = (
@@ -1158,9 +1156,23 @@ function LigandInput({
     const items = extractLigands(await file.text(), file.name);
     importItems(items, `${items.length} ligands imported`);
   };
+  const importText = () => {
+    const queries = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!queries.length) {
+      window.alert("Enter a SMILES string or compound name.");
+      return;
+    }
+    act(
+      () => api.importLigandQueries(project.id, queries),
+      `${queries.length} ligands imported`,
+    );
+  };
   return (
     <>
-      <div className="panel-head">SMILES / CSV Import</div>
+      <div className="panel-head">SMILES / Name / CSV Import</div>
       <div className="space-y-4 p-4">
         <button
           className="btn-secondary w-full justify-center"
@@ -1169,12 +1181,6 @@ function LigandInput({
           <FlaskConical />
           Draw with Ketcher
         </button>
-        <p className="text-xs leading-5 text-slate-500">
-          テキストは1行1分子（
-          <span className="font-mono text-slate-400">SMILES [name]</span>
-          ）。CSVはSMILES列（smiles / SMILES /
-          canonical_smiles等）を自動検出し、Ligand・name・molecule等から名前を読み込みます。
-        </p>
         <textarea
           className="input h-32 resize-none font-mono text-xs"
           value={text}
@@ -1182,10 +1188,10 @@ function LigandInput({
         />
         <button
           className="btn-primary w-full"
-          onClick={() => importItems(extractLigands(text))}
+          onClick={importText}
         >
           <Upload />
-          Import text
+          Import SMILES or Name
         </button>
         <div className="rounded-lg border border-line bg-ink/30 p-3">
           <input
@@ -1346,21 +1352,27 @@ function DockingSetup({
             Docking options
           </summary>
           <div className="space-y-3 border-t border-line p-3">
-            <label className="flex items-start gap-2 text-xs text-slate-300">
-              <input
-                className="mt-0.5"
-                type="checkbox"
-                checked={withH2O}
-                onChange={(event) => setWithH2O(event.target.checked)}
-              />
-              <span>
-                <span className="font-semibold text-slate-200">with H2O</span>
-                <span className="block text-[10px] text-slate-500">
-                  Retain waters with a polar contact to the receptor
-                </span>
-              </span>
-            </label>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 items-end gap-3">
+              <label className="flex h-10 items-center gap-2 text-xs font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={withH2O}
+                  onChange={(event) => setWithH2O(event.target.checked)}
+                />
+                with H2O
+              </label>
+              <div>
+                <div className="label">Seed</div>
+                <input
+                  className="input font-mono"
+                  type="number"
+                  value={seed}
+                  placeholder="random"
+                  onChange={(e) => setSeed(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="label">Exhaustiveness</div>
                 <input
@@ -1380,19 +1392,6 @@ function DockingSetup({
                   value={modes}
                   onChange={(e) => setModes(+e.target.value)}
                 />
-              </div>
-              <div>
-                <div className="label">Seed</div>
-                <input
-                  className="input font-mono"
-                  type="number"
-                  value={seed}
-                  placeholder="Random"
-                  onChange={(e) => setSeed(e.target.value)}
-                />
-                <div className="mt-1 text-[10px] text-slate-600">
-                  0 = fixed · blank = random
-                </div>
               </div>
             </div>
           </div>

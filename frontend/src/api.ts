@@ -68,6 +68,12 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ ligands }),
     }),
+  importLigandQueries: (projectId: string, queries: string[]) =>
+    request(`/api/projects/${projectId}/ligands/import-text`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ queries }),
+    }),
   patchLigand: (
     projectId: string,
     ligandId: string,

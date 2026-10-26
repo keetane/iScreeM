@@ -32,6 +32,7 @@ from app.services.pocket_volume import (
     pocket_metrics,
     read_p2rank_points,
 )
+from app.services.pubchem import resolve_ligand_queries
 from app.services.sdf import split_sdf_records
 from app.services.sdf_export import append_sdf_properties
 from app.services.storage_names import docking_job_root, readable_name, unique_directory_name
@@ -105,6 +106,18 @@ def test_csv_selection_excludes_unchecked_results():
     selected = select_docking_results(rows, [("job-a", "ligand_1", 2)])
 
     assert [(row["ligand_code"], row["pose"]) for row in selected] == [("ligand_1", 2)]
+
+
+def test_ligand_text_resolves_smiles_and_pubchem_names():
+    resolved = resolve_ligand_queries(
+        ["CCO ethanol", "aspirin"],
+        lookup=lambda name: "CC(=O)OC1=CC=CC=C1C(=O)O" if name == "aspirin" else "",
+    )
+
+    assert resolved == [
+        {"smiles": "CCO", "name": "ethanol"},
+        {"smiles": "CC(=O)OC1=CC=CC=C1C(=O)O", "name": "aspirin"},
+    ]
 
 
 def test_export_filename_uses_timestamp_and_receptor_names():

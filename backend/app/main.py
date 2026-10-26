@@ -25,9 +25,11 @@ from .schemas import (
     LigandImport,
     LigandPatch,
     LigandPrepareRequest,
+    LigandQueryImport,
     ProjectCreate,
     ProjectOut,
     PseExportRequest,
+    SmilesLigand,
 )
 from .services.commands import all_tools
 from .services.docking_csv import select_docking_results
@@ -48,6 +50,7 @@ from .services.pocket_volume import (
     pocket_metrics,
     read_p2rank_points,
 )
+from .services.pubchem import resolve_ligand_queries
 from .services.queue import queue
 from .services.score_parser import parse_docking_scores
 from .services.sdf import split_sdf_records
@@ -524,6 +527,21 @@ def import_ligands(project_id: str, body: LigandImport, db: Session = Depends(ge
     db.add_all(items)
     db.commit()
     return [serialize(x) for x in items]
+
+
+@app.post("/api/projects/{project_id}/ligands/import-text")
+def import_ligand_text(
+    project_id: str, body: LigandQueryImport, db: Session = Depends(get_db)
+):
+    try:
+        ligands = resolve_ligand_queries(body.queries)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return import_ligands(
+        project_id,
+        LigandImport(ligands=[SmilesLigand(**ligand) for ligand in ligands]),
+        db,
+    )
 
 
 @app.post("/api/projects/{project_id}/ligands/prepare")
