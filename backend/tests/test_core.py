@@ -1,11 +1,14 @@
 import shutil
 import subprocess
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
+from urllib.error import URLError
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.services import pubchem
 from app.services.docking import DockingInput, GninaAdapter, SminaAdapter
 from app.services.docking_csv import select_docking_results
 from app.services.export_names import export_filename
@@ -118,6 +121,29 @@ def test_ligand_text_resolves_smiles_and_pubchem_names():
         {"smiles": "CCO", "name": "ethanol"},
         {"smiles": "CC(=O)OC1=CC=CC=C1C(=O)O", "name": "aspirin"},
     ]
+
+
+def test_pubchem_retries_transient_dns_errors(monkeypatch):
+    attempts = 0
+
+    def fake_urlopen(_request, timeout):
+        nonlocal attempts
+        assert timeout == 15.0
+        attempts += 1
+        if attempts < 3:
+            raise URLError("temporary DNS failure")
+        return BytesIO(
+            b'{"PropertyTable":{"Properties":[{"SMILES":"CN1C=NC2=C1C(=O)N(C(=O)N2C)C"}]}}'
+        )
+
+    monkeypatch.setattr(pubchem, "urlopen", fake_urlopen)
+    monkeypatch.setattr(pubchem, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(pubchem, "PUBCHEM_REQUEST_INTERVAL_SECONDS", 0)
+
+    assert pubchem.fetch_pubchem_smiles("caffeine") == (
+        "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
+    )
+    assert attempts == 3
 
 
 def test_export_filename_uses_timestamp_and_receptor_names():

@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 PUBCHEM_PUG_REST = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 PUBCHEM_REQUEST_INTERVAL_SECONDS = 0.21
+PUBCHEM_MAX_ATTEMPTS = 3
+PUBCHEM_RETRY_DELAY_SECONDS = 0.5
 _request_lock = Lock()
 _last_request_started = 0.0
 
@@ -19,22 +21,37 @@ def fetch_pubchem_smiles(name: str, timeout: float = 15.0) -> str:
     encoded = quote(name.strip(), safe="")
     url = f"{PUBCHEM_PUG_REST}/compound/name/{encoded}/property/SMILES/JSON"
     request = Request(url, headers={"User-Agent": "iScreeM/0.1 (PubChem PUG REST client)"})
-    try:
-        with _request_lock:
-            delay = PUBCHEM_REQUEST_INTERVAL_SECONDS - (monotonic() - _last_request_started)
-            if delay > 0:
-                sleep(delay)
-            _last_request_started = monotonic()
-            with urlopen(request, timeout=timeout) as response:
-                payload = json.load(response)
-    except HTTPError as exc:
-        if exc.code == 404:
-            raise ValueError(f'PubChem did not find a compound named "{name}"') from exc
-        if exc.code == 503:
-            raise ValueError("PubChem is busy; wait briefly and try again") from exc
-        raise ValueError(f"PubChem request failed ({exc.code})") from exc
-    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise ValueError(f"PubChem request failed for {name}: {exc}") from exc
+    payload = None
+    last_error: Exception | None = None
+    for attempt in range(PUBCHEM_MAX_ATTEMPTS):
+        try:
+            with _request_lock:
+                delay = PUBCHEM_REQUEST_INTERVAL_SECONDS - (
+                    monotonic() - _last_request_started
+                )
+                if delay > 0:
+                    sleep(delay)
+                _last_request_started = monotonic()
+                with urlopen(request, timeout=timeout) as response:
+                    payload = json.load(response)
+            break
+        except HTTPError as exc:
+            if exc.code == 404:
+                raise ValueError(
+                    f'PubChem did not find a compound named "{name}"'
+                ) from exc
+            if exc.code not in {429, 500, 502, 503, 504}:
+                raise ValueError(f"PubChem request failed ({exc.code})") from exc
+            last_error = exc
+        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+        if attempt + 1 < PUBCHEM_MAX_ATTEMPTS:
+            sleep(PUBCHEM_RETRY_DELAY_SECONDS * (2**attempt))
+    if payload is None:
+        raise ValueError(
+            "Could not connect to PubChem after 3 attempts. "
+            "Check the internet or DNS connection and try again."
+        ) from last_error
     properties = payload.get("PropertyTable", {}).get("Properties", [])
     if not properties:
         raise ValueError(f'PubChem returned no SMILES for "{name}"')
