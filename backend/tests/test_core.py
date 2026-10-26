@@ -389,6 +389,37 @@ def test_docked_sdf_restores_template_bonds_after_engine_reordering(tmp_path: Pa
     assert Chem.MolToSmiles(poses[0], canonical=True) == canonical
 
 
+def test_docked_sdf_accepts_polar_hydrogen_retained_by_smina(tmp_path: Path):
+    Chem = pytest.importorskip("rdkit.Chem")
+    prepared, canonical = prepare_3d_molecule(
+        Chem.MolFromSmiles("COc1cccc2c(NCCCCCO[N+](=O)[O-])ccnc12"),
+        name="5MPN",
+        seed=61453,
+    )
+    template = tmp_path / "template.sdf"
+    write_validated_sdf(prepared, template)
+
+    heavy = Chem.RemoveHs(prepared)
+    donor_index = next(
+        atom.GetIdx()
+        for atom in heavy.GetAtoms()
+        if atom.GetAtomicNum() in {7, 8, 16} and atom.GetTotalNumHs() > 0
+    )
+    raw = Chem.AddHs(heavy, addCoords=True, onlyOnAtoms=[donor_index])
+    assert raw.GetNumAtoms() == heavy.GetNumAtoms() + 1
+    raw_output = tmp_path / "docked.raw.sdf"
+    raw_output.write_text(Chem.MolToMolBlock(raw) + "\n$$$$\n")
+    normalized = tmp_path / "docked.sdf"
+
+    report = normalize_docked_sdf(raw_output, template, normalized)
+    pose = next(iter(Chem.SDMolSupplier(str(normalized), removeHs=False)), None)
+
+    assert report["output_validated"] is True
+    assert pose is not None
+    assert pose.GetNumAtoms() == pose.GetNumHeavyAtoms()
+    assert Chem.MolToSmiles(pose, canonical=True) == canonical
+
+
 def test_pdb_parser(tmp_path: Path):
     pdb = tmp_path / "x.pdb"
     pdb.write_text(

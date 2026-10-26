@@ -149,14 +149,23 @@ def normalize_docked_sdf(raw_output: Path, template_sdf: Path, destination: Path
             raw = Chem.MolFromMolBlock(record, removeHs=False, sanitize=False, strictParsing=False)
             if raw is None:
                 raise ValueError(f"Docking pose {pose} could not be parsed")
-            match = raw.GetSubstructMatch(query)
-            if len(match) != template.GetNumAtoms() or raw.GetNumAtoms() != template.GetNumAtoms():
-                raise ValueError(f"Docking pose {pose} does not match the prepared ligand graph")
+            # Vina-family engines omit most hydrogens but retain polar donor
+            # hydrogens.  Compare heavy-atom graphs so an otherwise valid pose
+            # is not rejected merely because the engine kept an N-H or O-H.
+            raw_heavy = Chem.RemoveHs(raw, sanitize=False)
+            match = raw_heavy.GetSubstructMatch(query)
+            if (
+                len(match) != template.GetNumAtoms()
+                or raw_heavy.GetNumAtoms() != template.GetNumAtoms()
+            ):
+                raise ValueError(
+                    f"Docking pose {pose} does not match the prepared ligand heavy-atom graph"
+                )
             restored = Chem.Mol(template)
             restored.RemoveAllConformers()
             conformer = Chem.Conformer(template.GetNumAtoms())
             conformer.Set3D(True)
-            raw_conformer = raw.GetConformer()
+            raw_conformer = raw_heavy.GetConformer()
             for template_index, raw_index in enumerate(match):
                 conformer.SetAtomPosition(template_index, raw_conformer.GetAtomPosition(raw_index))
             restored.AddConformer(conformer)
