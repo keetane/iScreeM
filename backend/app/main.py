@@ -81,6 +81,21 @@ def serialize(obj):
     return {column.name: getattr(obj, column.name) for column in obj.__table__.columns}
 
 
+def cancel_queued_job(item: DockingJob) -> None:
+    """Cancel a job that has not started, including legacy rows without an RQ id."""
+    item.cancel_requested = True
+    if item.status != JobStatus.QUEUED:
+        return
+    if item.rq_job_id:
+        try:
+            queue().remove(item.rq_job_id)
+        except Exception:
+            # Redis may have forgotten a stale queue item already. The database
+            # state must still become terminal so it cannot block receptor edits.
+            pass
+    item.status = JobStatus.CANCELLED
+
+
 def enqueue_or_503(func, *args, queue_name="default"):
     try:
         return queue(queue_name).enqueue(func, *args)
@@ -370,11 +385,19 @@ def delete_protein(project_id: str, protein_id: str, db: Session = Depends(get_d
     if not protein or protein.project_id != project_id:
         raise HTTPException(404, "Protein not found")
     active = list(db.scalars(select(DockingJob).where(DockingJob.project_id == project_id)))
+    queued_jobs = [
+        job
+        for job in active
+        if job.status == JobStatus.QUEUED
+        and (job.parameters or {}).get("protein_id") == protein_id
+    ]
+    for job in queued_jobs:
+        cancel_queued_job(job)
     active_jobs = [
         job
         for job in active
         if job.status
-        in {JobStatus.QUEUED, JobStatus.PREPARING, JobStatus.RUNNING, JobStatus.POSTPROCESSING}
+        in {JobStatus.PREPARING, JobStatus.RUNNING, JobStatus.POSTPROCESSING}
         and (job.parameters or {}).get("protein_id") == protein_id
     ]
     if active_jobs:
@@ -1355,13 +1378,7 @@ def cancel_job(job_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Job not found")
     if item.status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
         raise HTTPException(409, "Job is already terminal")
-    item.cancel_requested = True
-    if item.status == JobStatus.QUEUED:
-        try:
-            queue().remove(item.rq_job_id)
-            item.status = JobStatus.CANCELLED
-        except Exception:
-            pass
+    cancel_queued_job(item)
     db.commit()
     return serialize(item)
 

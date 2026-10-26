@@ -42,6 +42,67 @@ from app.services.sdf_export import append_sdf_properties
 from app.services.storage_names import docking_job_root, readable_name, unique_directory_name
 
 
+def test_cancel_queued_job_without_rq_id_becomes_terminal():
+    from app.main import cancel_queued_job
+    from app.models import DockingJob, JobStatus
+
+    job = DockingJob(
+        id="stale-job",
+        project_id="project",
+        name="Pocket prediction",
+        kind="POCKET_PREDICTION",
+        status=JobStatus.QUEUED,
+        parameters={"protein_id": "protein"},
+        rq_job_id=None,
+    )
+
+    cancel_queued_job(job)
+
+    assert job.cancel_requested is True
+    assert job.status == JobStatus.CANCELLED
+
+
+def test_delete_protein_cancels_stale_queued_job(tmp_path: Path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app import main
+    from app.db import Base
+    from app.models import DockingJob, JobStatus, Project, Protein
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    source = tmp_path / "protein.pdb"
+    source.write_text("END\n")
+    monkeypatch.setattr(main.settings, "data_dir", tmp_path)
+
+    with Session(engine) as db:
+        project = Project(id="project", name="Test")
+        protein = Protein(
+            id="protein",
+            project_id=project.id,
+            name="5ajv",
+            original_path=str(source),
+            stats={},
+        )
+        job = DockingJob(
+            id="stale-job",
+            project_id=project.id,
+            name="Pocket prediction",
+            kind="POCKET_PREDICTION",
+            status=JobStatus.QUEUED,
+            parameters={"protein_id": protein.id},
+            rq_job_id=None,
+        )
+        db.add_all([project, protein, job])
+        db.commit()
+
+        assert main.delete_protein(project.id, protein.id, db) == {"deleted": protein.id}
+        assert db.get(Protein, protein.id) is None
+        assert db.get(DockingJob, job.id) is None
+        assert not source.exists()
+
+
 def test_grid_uses_padding_and_minimum():
     center, size, approximate = grid_from_coordinates([[0, 1, 2], [4, 5, 6]])
     assert center == {"x": 2.0, "y": 3.0, "z": 4.0}

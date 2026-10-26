@@ -1551,7 +1551,7 @@ function ProteinBottom({
       !project ||
       !protein ||
       !window.confirm(
-        `Delete protein “${protein.name}” and its preparation/pocket files?`,
+        `Delete protein “${protein.name}”, its queued jobs, and its preparation/pocket/docking files?`,
       )
     )
       return;
