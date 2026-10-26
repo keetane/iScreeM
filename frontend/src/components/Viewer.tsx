@@ -95,6 +95,7 @@ export function Viewer({
     poseModels = useRef<Map<string, any>>(new Map()),
     appliedDockingFocusNonce = useRef<number>(),
     surfaceType = useRef<any>(null),
+    jmolElementColors = useRef<Record<string, number>>({}),
     surfaceGeneration = useRef(0),
     focusNeighborhood = useRef<any>(),
     onSelectResidueRef = useRef(onSelectResidue),
@@ -116,6 +117,7 @@ export function Viewer({
     import("3dmol").then(($3Dmol) => {
       if (!host.current || !alive) return;
       surfaceType.current = $3Dmol.SurfaceType.SAS;
+      jmolElementColors.current = $3Dmol.elementColors.Jmol;
       viewer.current = $3Dmol.createViewer(host.current, {
         backgroundColor: "#07111f",
         antialias: true,
@@ -327,10 +329,25 @@ export function Viewer({
         const data = await response.text();
         if (cancelled || !viewer.current) return;
         const poseModel = viewer.current.addModel(data, "sdf");
-        poseModel.setStyle(
-          {},
-          { stick: { ...ligandStickStyle, radius: 0.28 } },
-        );
+        // A per-atom color function is required here: the generic Jmol scheme
+        // otherwise wins over carbon-only style overrides when bonds are built.
+        poseModel.setStyle({}, {
+          stick: {
+            radius: 0.28,
+            singleBonds: false,
+            doubleBondScaling: 0.4,
+            tripleBondScaling: 0.25,
+            aromaticStyle: "dashed",
+            colorfunc: (atom: { elem?: string }) => {
+              const element = String(atom.elem || "");
+              return element.toUpperCase() === "C"
+                ? 0x34d399
+                : (jmolElementColors.current[element] ??
+                    jmolElementColors.current[element.toUpperCase()] ??
+                    0xff1493);
+            },
+          },
+        });
         poseModels.current.set(pose.key, poseModel);
         added = true;
       }),
@@ -502,12 +519,6 @@ export function Viewer({
     model.current.setStyle(modifiedProteinResidues, {
       cartoon: { color: "#8ccbd4" },
     });
-    selectedResidues.forEach((key) =>
-      model.current.setStyle(residueSelector(key), {
-        cartoon: { color: "#ffffff" },
-        line: { color: "#ffffff", linewidth: 1 },
-      }),
-    );
     if (focusNeighborhood.current)
       model.current.addStyle?.(focusNeighborhood.current, {
         line: { color: "#f3b84b", linewidth: 2 },
@@ -515,6 +526,22 @@ export function Viewer({
     model.current.setStyle(
       waterResidues,
       showWater ? { sphere: { colorscheme: "Jmol", scale: 0.35 } } : {},
+    );
+    const selectedWaterKeys = new Set(
+      (protein?.stats.water_molecules || []).map(
+        (water) => `${water.chain || "_"}:${water.residue_number || ""}`,
+      ),
+    );
+    selectedResidues.forEach((key) =>
+      model.current.addStyle(
+        residueSelector(key),
+        selectedWaterKeys.has(key)
+          ? { sphere: { colorscheme: "Jmol", scale: 0.4 } }
+          : {
+              cartoon: { color: "#ffffff" },
+              line: { color: "#ffffff", linewidth: 1 },
+            },
+      ),
     );
     if (showSurface && surfaceType.current !== undefined) {
       const surfaceColors: Record<string, string> = {

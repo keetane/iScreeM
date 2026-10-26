@@ -230,6 +230,9 @@ def test_pdb_parser(tmp_path: Path):
     assert stats["atom_count"] == 2
     assert stats["residue_count"] == 1
     assert stats["water_atom_count"] == 1
+    assert stats["water_molecules"] == [
+        {"name": "HOH", "chain": "A", "residue_number": "101", "atom_count": 1}
+    ]
 
 
 def test_pdb_parser_keeps_organic_hetero_residues_separate(tmp_path: Path):
@@ -374,10 +377,11 @@ def test_adapters_only_emit_explicit_options(tmp_path: Path):
         tmp_path / "out.sdf",
         {"x": 1, "y": 2, "z": 3},
         {"x": 18, "y": 19, "z": 20},
-        {"num_modes": 9},
+        {"num_modes": 9, "seed": 0},
     )
     smina = SminaAdapter().build_args(item)
     assert "--num_modes" in smina and "--cpu" not in smina and Path(smina[0]).name == "smina"
+    assert smina[smina.index("--seed") + 1] == "0"
     gnina = GninaAdapter().build_args(
         DockingInput(**{**item.__dict__, "parameters": {"cnn_scoring": "rescore", "no_gpu": True}})
     )

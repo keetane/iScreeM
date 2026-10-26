@@ -43,6 +43,7 @@ def parse_structure(path: Path) -> dict:
         chains: dict[str, set[tuple[str, str]]] = defaultdict(set)
         sequence_chains: dict[str, dict[str, str]] = defaultdict(dict)
         hetero: dict[tuple[str, str, str], int] = defaultdict(int)
+        waters: dict[tuple[str, str, str], int] = defaultdict(int)
         metals: dict[str, int] = defaultdict(int)
         water_count = 0
         atom_count = 0
@@ -70,6 +71,7 @@ def parse_structure(path: Path) -> dict:
                         element = atom.element.name.upper()
                         if is_water:
                             water_count += 1
+                            waters[(residue_name, chain_id, str(residue.seqid.num))] += 1
                         elif element in METALS:
                             metals[element] += 1
                         elif not is_polymer:
@@ -88,6 +90,10 @@ def parse_structure(path: Path) -> dict:
                 for (name, chain, number), count in sorted(hetero.items())
             ],
             "water_atom_count": water_count,
+            "water_molecules": [
+                {"name": name, "chain": chain, "residue_number": number, "atom_count": count}
+                for (name, chain, number), count in sorted(waters.items())
+            ],
             "metals": [{"element": key, "count": value} for key, value in sorted(metals.items())],
             "warnings": warnings,
         }
@@ -100,6 +106,7 @@ def parse_pdb(path: Path) -> dict:
     chains: dict[str, set[tuple[str, str]]] = defaultdict(set)
     sequence_chains: dict[str, dict[str, str]] = defaultdict(dict)
     hetero: dict[tuple[str, str, str], int] = defaultdict(int)
+    waters: dict[tuple[str, str, str], int] = defaultdict(int)
     metals: dict[str, int] = defaultdict(int)
     water_count = 0
     atom_count = 0
@@ -123,6 +130,7 @@ def parse_pdb(path: Path) -> dict:
                 sequence_chains[chain].setdefault(seq, residue)
             elif residue in WATERS:
                 water_count += 1
+                waters[(residue, chain, seq)] += 1
             elif residue in POLYMER_HETERO:
                 # Modified amino acids such as NEP are HETATM records in
                 # PDBFixer/PDB2PQR output, but belong to the protein chain.
@@ -147,6 +155,10 @@ def parse_pdb(path: Path) -> dict:
             for (name, chain, number), count in sorted(hetero.items())
         ],
         "water_atom_count": water_count,
+        "water_molecules": [
+            {"name": name, "chain": chain, "residue_number": number, "atom_count": count}
+            for (name, chain, number), count in sorted(waters.items())
+        ],
         "metals": [{"element": key, "count": value} for key, value in sorted(metals.items())],
         "warnings": warnings,
     }

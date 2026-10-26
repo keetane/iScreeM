@@ -25,6 +25,7 @@ import {
   Focus,
   FolderPlus,
   Hexagon,
+  Pencil,
   Play,
   RefreshCw,
   Scale,
@@ -223,12 +224,10 @@ export default function App() {
     project?.proteins.find((item) => item.id === selectedProteinId) ||
     project?.proteins[0];
   const selectedDockingPoses = useMemo(() => {
-    const displayed = new Set(visibleResultKeys);
-    if (activePose) displayed.add(activePose.key);
     return dockingResults
-      .filter((row) => displayed.has(row.key))
+      .filter((row) => visibleResultKeys.has(row.key))
       .map((row) => ({ key: row.key, url: row.pose_url, pose: row.pose }));
-  }, [dockingResults, visibleResultKeys, activePose]);
+  }, [dockingResults, visibleResultKeys]);
   useEffect(() => {
     setVisibleStructureLigands(
       new Set((protein?.stats.hetero_molecules || []).map(structureLigandKey)),
@@ -252,7 +251,7 @@ export default function App() {
         setActivePose((current) =>
           current && rows.some((row) => row.key === current.key)
             ? current
-            : rows[0],
+            : undefined,
         );
       })
       .catch((error) =>
@@ -637,6 +636,9 @@ export default function App() {
               onPoseFocus={(row) => {
                 if (row.protein_id && row.protein_id !== protein?.id)
                   selectProtein(row.protein_id);
+                setVisibleResultKeys((current) =>
+                  new Set(current).add(row.key),
+                );
                 setActivePose(row);
                 setDockingPoseFocus({ key: row.key, nonce: Date.now() });
               }}
@@ -1168,8 +1170,7 @@ function LigandInput({
           Draw with Ketcher
         </button>
         <p className="text-xs leading-5 text-slate-500">
-          Ketcherで描画した構造はSMILESへ変換し、名前とともにLigand
-          Libraryへ直接追加できます。テキストは1行1分子（
+          テキストは1行1分子（
           <span className="font-mono text-slate-400">SMILES [name]</span>
           ）。CSVはSMILES列（smiles / SMILES /
           canonical_smiles等）を自動検出し、Ligand・name・molecule等から名前を読み込みます。
@@ -1245,6 +1246,7 @@ function DockingSetup({
   const [engine, setEngine] = useState<"smina" | "gnina">("smina"),
     [exhaustiveness, setExhaustiveness] = useState(8),
     [modes, setModes] = useState(3),
+    [seed, setSeed] = useState("0"),
     [withH2O, setWithH2O] = useState(false),
     [uploads, setUploads] = useState<DockingUpload[]>([]);
   const uploadInput = useRef<HTMLInputElement>(null);
@@ -1303,17 +1305,6 @@ function DockingSetup({
               : "Select a receptor"
           }
         />
-        <label className="flex items-center gap-2 rounded-lg border border-line bg-ink/30 px-3 py-2 text-xs text-slate-300">
-          <input
-            type="checkbox"
-            checked={withH2O}
-            onChange={(event) => setWithH2O(event.target.checked)}
-          />
-          <span>
-            <span className="font-semibold text-slate-200">with H2O</span> ·
-            retain water molecules with a polar contact to the receptor
-          </span>
-        </label>
         <Field
           label="Grid"
           value={grid?.name || "Global search without grid"}
@@ -1350,28 +1341,62 @@ function DockingSetup({
             </div>
           )}
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <div className="label">Exhaustiveness</div>
-            <input
-              className="input font-mono"
-              type="number"
-              min="1"
-              value={exhaustiveness}
-              onChange={(e) => setExhaustiveness(+e.target.value)}
-            />
+        <details className="rounded-lg border border-line bg-ink/30">
+          <summary className="cursor-pointer select-none px-3 py-2 text-xs font-semibold text-slate-300">
+            Docking options
+          </summary>
+          <div className="space-y-3 border-t border-line p-3">
+            <label className="flex items-start gap-2 text-xs text-slate-300">
+              <input
+                className="mt-0.5"
+                type="checkbox"
+                checked={withH2O}
+                onChange={(event) => setWithH2O(event.target.checked)}
+              />
+              <span>
+                <span className="font-semibold text-slate-200">with H2O</span>
+                <span className="block text-[10px] text-slate-500">
+                  Retain waters with a polar contact to the receptor
+                </span>
+              </span>
+            </label>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <div className="label">Exhaustiveness</div>
+                <input
+                  className="input font-mono"
+                  type="number"
+                  min="1"
+                  value={exhaustiveness}
+                  onChange={(e) => setExhaustiveness(+e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="label">Modes</div>
+                <input
+                  className="input font-mono"
+                  type="number"
+                  min="1"
+                  value={modes}
+                  onChange={(e) => setModes(+e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="label">Seed</div>
+                <input
+                  className="input font-mono"
+                  type="number"
+                  value={seed}
+                  placeholder="Random"
+                  onChange={(e) => setSeed(e.target.value)}
+                />
+                <div className="mt-1 text-[10px] text-slate-600">
+                  0 = fixed · blank = random
+                </div>
+              </div>
+            </div>
           </div>
-          <div>
-            <div className="label">Modes</div>
-            <input
-              className="input font-mono"
-              type="number"
-              min="1"
-              value={modes}
-              onChange={(e) => setModes(+e.target.value)}
-            />
-          </div>
-        </div>
+        </details>
         <button
           disabled={!runnable}
           className="btn-primary w-full"
@@ -1389,6 +1414,7 @@ function DockingSetup({
                   engine,
                   exhaustiveness,
                   num_modes: modes,
+                  seed: seed.trim() === "" ? null : Number(seed),
                   ...(engine === "gnina" ? { cnn_scoring: "rescore" } : {}),
                 }),
               "Docking job queued",
@@ -1812,6 +1838,56 @@ function SequencePanel({
   selectedResidues: Set<string>;
   setSelectedResidues: (x: Set<string>) => void;
 }) {
+  const dragSelection = useRef({
+    active: false,
+    add: true,
+    visited: new Set<string>(),
+  });
+  const selectionDraft = useRef(new Set(selectedResidues));
+  useEffect(() => {
+    if (!dragSelection.current.active)
+      selectionDraft.current = new Set(selectedResidues);
+  }, [selectedResidues]);
+  useEffect(() => {
+    const stop = () => {
+      dragSelection.current.active = false;
+      dragSelection.current.visited.clear();
+    };
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, []);
+  const applyDragSelection = (key: string) => {
+    const drag = dragSelection.current;
+    if (!drag.active || drag.visited.has(key)) return;
+    drag.visited.add(key);
+    const next = new Set(selectionDraft.current);
+    drag.add ? next.add(key) : next.delete(key);
+    selectionDraft.current = next;
+    setSelectedResidues(next);
+  };
+  const beginDragSelection = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    key: string,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    selectionDraft.current = new Set(selectedResidues);
+    dragSelection.current = {
+      active: true,
+      add: !selectedResidues.has(key),
+      visited: new Set(),
+    };
+    applyDragSelection(key);
+  };
+  const toggleByKeyboard = (key: string) => {
+    const next = new Set(selectedResidues);
+    next.has(key) ? next.delete(key) : next.add(key);
+    setSelectedResidues(next);
+  };
   const sequences =
     protein.stats.sequences ||
     protein.stats.chains.map(
@@ -1826,6 +1902,7 @@ function SequencePanel({
           })),
         }) as ChainSequence,
     );
+  const waters = protein.stats.water_molecules || [];
   const pocketRanks = new Map<string, number>();
   pockets.forEach((pocket) =>
     pocket.residues.forEach((value) => {
@@ -1882,7 +1959,7 @@ function SequencePanel({
                         key={key}
                         title={`${residue.name} ${residue.number}`}
                         aria-label={`Chain ${chain.id} residue ${residue.number} ${residue.name}`}
-                        className={`w-[1ch] shrink-0 rounded py-1 text-center transition ${selected ? "bg-white text-ink" : "hover:bg-cyan/20"}`}
+                        className={`w-[1ch] shrink-0 select-none rounded py-1 text-center transition ${selected ? "bg-white text-ink" : "hover:bg-cyan/20"}`}
                         style={
                           selected
                             ? undefined
@@ -1890,10 +1967,15 @@ function SequencePanel({
                               ? { color: pocketColorForRank(rank) }
                               : undefined
                         }
-                        onClick={() => {
-                          const next = new Set(selectedResidues);
-                          selected ? next.delete(key) : next.add(key);
-                          setSelectedResidues(next);
+                        onPointerDown={(event) =>
+                          beginDragSelection(event, key)
+                        }
+                        onPointerEnter={() => applyDragSelection(key)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleByKeyboard(key);
+                          }
                         }}
                       >
                         {residue.one_letter}
@@ -1905,6 +1987,41 @@ function SequencePanel({
             </div>
           </div>
         ))}
+        {waters.length > 0 && (
+          <div className="rounded-lg border border-line bg-ink/30 p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs text-slate-400">
+              <span className="font-semibold text-cyan">Water</span>
+              <span className="font-mono text-slate-600">
+                {waters.length} molecules · {protein.stats.water_atom_count} atoms
+              </span>
+            </div>
+            <div className="flex max-h-24 flex-wrap gap-1 overflow-auto">
+              {waters.map((water) => {
+                const key = `${water.chain || "_"}:${water.residue_number || ""}`;
+                const selected = selectedResidues.has(key);
+                return (
+                  <button
+                    key={`${key}:${water.name}`}
+                    type="button"
+                    title={`${water.name} ${water.chain || "_"}:${water.residue_number || ""}`}
+                    aria-label={`Water ${water.chain || "_"} ${water.residue_number || ""}`}
+                    className={`select-none rounded border px-1.5 py-1 font-mono text-[10px] transition ${selected ? "border-white bg-white text-ink" : "border-cyan/20 text-cyan hover:bg-cyan/20"}`}
+                    onPointerDown={(event) => beginDragSelection(event, key)}
+                    onPointerEnter={() => applyDragSelection(key)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggleByKeyboard(key);
+                      }
+                    }}
+                  >
+                    {water.chain || "_"}:{water.residue_number || "?"}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1982,6 +2099,7 @@ function LigandBottom({
   act: (fn: () => Promise<unknown>, msg?: string) => void;
 }) {
   const data = project?.ligands || [];
+  const [editingLigand, setEditingLigand] = useState<Ligand>();
   const actRef = useRef(act);
   actRef.current = act;
   const update = useCallback(
@@ -2026,19 +2144,33 @@ function LigandBottom({
           );
         },
         cell: ({ row }) => (
-          <input
-            type="checkbox"
-            aria-label={`Select ${row.original.ligand_code}`}
-            checked={selectedLigands.has(row.original.id)}
-            onChange={() => {
-              const n = new Set(selectedLigands);
-              n.has(row.original.id)
-                ? n.delete(row.original.id)
-                : n.add(row.original.id);
-              setSelectedLigands(n);
-            }}
-            onClick={(event) => event.stopPropagation()}
-          />
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label={`Select ${row.original.ligand_code}`}
+              checked={selectedLigands.has(row.original.id)}
+              onChange={() => {
+                const n = new Set(selectedLigands);
+                n.has(row.original.id)
+                  ? n.delete(row.original.id)
+                  : n.add(row.original.id);
+                setSelectedLigands(n);
+              }}
+              onClick={(event) => event.stopPropagation()}
+            />
+            <button
+              type="button"
+              className="icon-btn h-7 w-7"
+              aria-label={`Edit ${row.original.ligand_code} structure with Ketcher`}
+              title="Edit structure with Ketcher"
+              onClick={(event) => {
+                event.stopPropagation();
+                setEditingLigand(row.original);
+              }}
+            >
+              <Pencil />
+            </button>
+          </div>
         ),
       },
       {
@@ -2154,6 +2286,31 @@ function LigandBottom({
         </div>
       </div>
       <DataTable data={data} columns={columns} />
+      {editingLigand && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-[100] grid place-items-center bg-black/75 text-sm text-slate-300">
+              Loading Ketcher…
+            </div>
+          }
+        >
+          <KetcherDialog
+            open
+            initialSmiles={editingLigand.smiles}
+            initialName={editingLigand.name}
+            submitLabel="Save structure"
+            onClose={() => setEditingLigand(undefined)}
+            onImport={(smiles, name) => {
+              update(
+                editingLigand,
+                { smiles, name },
+                "Structure updated; ligand preparation is required again",
+              );
+              setEditingLigand(undefined);
+            }}
+          />
+        </Suspense>
+      )}
     </>
   );
 }
@@ -2409,10 +2566,15 @@ function ResultsBottomEnhanced({
         ? navigation
         : sortedResults;
     if (!candidates.length) return;
-    const rowIndex = Math.max(
-      0,
-      candidates.findIndex((item) => item.key === activePose?.key),
+    const currentIndex = candidates.findIndex(
+      (item) => item.key === activePose?.key,
     );
+    const rowIndex =
+      currentIndex >= 0
+        ? currentIndex
+        : delta > 0
+          ? -1
+          : 0;
     const next =
       candidates[(rowIndex + delta + candidates.length) % candidates.length];
     setActivePose(next);
@@ -2524,7 +2686,7 @@ function ResultsBottomEnhanced({
           ),
         ),
       );
-      setActivePose(remaining[0]);
+      setActivePose(undefined);
       refresh();
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error));
@@ -2796,14 +2958,18 @@ function ResultsBottomEnhanced({
             {sortedResults.map((row) => (
               <tr
                 key={row.key}
-                title="Click to activate this pose; use ↑/↓ to move the active row"
+                title="Click to activate or deactivate this pose; use ↑/↓ to move the active row"
                 tabIndex={activePose?.key === row.key ? 0 : -1}
                 aria-selected={activePose?.key === row.key}
                 className={
                   "cursor-pointer " +
                   (activePose?.key === row.key ? "bg-cyan/10" : "")
                 }
-                onClick={() => setActivePose(row)}
+                onClick={() =>
+                  setActivePose(
+                    activePose?.key === row.key ? undefined : row,
+                  )
+                }
                 onKeyDown={(event) => {
                   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                     event.preventDefault();
