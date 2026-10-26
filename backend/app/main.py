@@ -183,6 +183,12 @@ def project(project_id: str, db: Session = Depends(get_db)):
         source = viewer_path or resolve_data_path(data.get("original_path"))
         try:
             if source is not None:
+                stat = source.stat()
+                # The protein row keeps the same id while receptor preparation
+                # replaces the structure shown by the viewer.  Expose a file
+                # revision so the frontend can refetch the prepared structure
+                # instead of retaining the model loaded before the job ended.
+                data["structure_version"] = f"{stat.st_mtime_ns}-{stat.st_size}"
                 prepared_metadata = data["stats"].get("preparation")
                 parsed = parse_structure(source)
                 data["stats"] = {**(data["stats"] or {}), **parsed, "source_format": source_format}

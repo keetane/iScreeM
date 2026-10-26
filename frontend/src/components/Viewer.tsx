@@ -280,7 +280,10 @@ export function Viewer({
     viewer.current.render();
     const sourceFormat =
       protein.stats.source_format || protein.stats.format || "pdb";
-    fetch(`/api/proteins/${protein.id}/file`)
+    const revision = protein.structure_version
+      ? `?v=${encodeURIComponent(protein.structure_version)}`
+      : "";
+    fetch(`/api/proteins/${protein.id}/file${revision}`)
       .then((r) => {
         if (!r.ok) throw new Error(`Structure download failed (${r.status})`);
         return r.text();
@@ -349,6 +352,9 @@ export function Viewer({
   }, [
     viewerReady,
     protein?.id,
+    protein?.structure_version,
+    protein?.prepared_path,
+    protein?.prepared_receptor_path,
     protein?.stats.format,
     protein?.stats.source_format,
   ]);
