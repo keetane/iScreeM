@@ -14,6 +14,16 @@ from pathlib import Path
 from .commands import CommandResult, run_command
 
 
+def _exclude_terminal_missing_residues(fixer) -> None:
+    """Keep only internal gaps; unresolved N/C termini are intentional truncations."""
+    chains = list(fixer.topology.chains())
+    for key in list(fixer.missingResidues):
+        chain_index, insertion_index = key
+        residue_count = len(list(chains[chain_index].residues()))
+        if insertion_index in {0, residue_count}:
+            del fixer.missingResidues[key]
+
+
 def _missing_residue_report(fixer) -> list[dict]:
     chains = list(fixer.topology.chains())
     report: list[dict] = []
@@ -21,6 +31,7 @@ def _missing_residue_report(fixer) -> list[dict]:
         chain = chains[chain_index]
         report.append(
             {
+                "_chain_index": chain_index,
                 "chain": chain.id or "_",
                 "index": insertion_index,
                 "residues": list(names),
@@ -29,11 +40,26 @@ def _missing_residue_report(fixer) -> list[dict]:
     return report
 
 
+def _record_added_residue_numbers(fixer, report: list[dict]) -> list[dict]:
+    """Resolve each repaired gap to the residue ids written by PDBFixer."""
+    chains = list(fixer.topology.chains())
+    offsets: dict[int, int] = {}
+    for item in sorted(report, key=lambda value: (value["_chain_index"], value["index"])):
+        chain_index = item["_chain_index"]
+        count = len(item["residues"])
+        start = item["index"] + offsets.get(chain_index, 0)
+        residues = list(chains[chain_index].residues())
+        item["residue_numbers"] = [str(residue.id) for residue in residues[start : start + count]]
+        offsets[chain_index] = offsets.get(chain_index, 0) + count
+        del item["_chain_index"]
+    return report
+
+
 def repair_with_pdbfixer(input_path: Path, fixed_path: Path, ph: float = 7.4) -> list[dict]:
     """Add SEQRES-backed missing residues/atoms and hydrogens to a PDB/mmCIF."""
     try:
-        from pdbfixer import PDBFixer
         from openmm.app import PDBFile
+        from pdbfixer import PDBFixer
     except ImportError as exc:  # pragma: no cover - exercised by the tool probe
         raise RuntimeError(
             "PDBFixer and OpenMM are required for receptor preparation; "
@@ -42,9 +68,11 @@ def repair_with_pdbfixer(input_path: Path, fixed_path: Path, ph: float = 7.4) ->
 
     fixer = PDBFixer(filename=str(input_path))
     fixer.findMissingResidues()
+    _exclude_terminal_missing_residues(fixer)
     missing = _missing_residue_report(fixer)
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
+    _record_added_residue_numbers(fixer, missing)
     fixer.addMissingHydrogens(ph)
     fixed_path.parent.mkdir(parents=True, exist_ok=True)
     with fixed_path.open("w") as handle:

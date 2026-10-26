@@ -38,6 +38,28 @@ const ligandStickStyle = {
   aromaticStyle: "dashed",
 };
 const waterResidues = { resn: ["HOH", "WAT", "DOD"] };
+const aminoAcidShortcuts: Record<string, string> = {
+  a: "ALA",
+  r: "ARG",
+  n: "ASN",
+  d: "ASP",
+  c: "CYS",
+  e: "GLU",
+  q: "GLN",
+  g: "GLY",
+  h: "HIS",
+  i: "ILE",
+  l: "LEU",
+  k: "LYS",
+  m: "MET",
+  f: "PHE",
+  p: "PRO",
+  s: "SER",
+  t: "THR",
+  w: "TRP",
+  y: "TYR",
+  v: "VAL",
+};
 const interactionWaterResidues = new Set(["HOH", "WAT", "DOD"]);
 // PDBFixer/PDB2PQR writes covalently modified amino acids (for example the
 // phosphohistidine NEP in 6ETJ) as HETATM. Treat these as part of the protein
@@ -74,6 +96,30 @@ const structureLigandSelector = (ligand: StructureLigand) => ({
       }
     : {}),
 });
+const repairedResidueKeys = (protein?: Protein) => {
+  const gaps = [
+    ...(protein?.stats.preparation?.missing_residues_added || []),
+  ].sort((left, right) =>
+    left.chain === right.chain
+      ? left.index - right.index
+      : left.chain.localeCompare(right.chain),
+  );
+  const sequences = new Map(
+    (protein?.stats.sequences || []).map((chain) => [chain.id, chain.residues]),
+  );
+  const offsets = new Map<string, number>();
+  return gaps.flatMap((gap) => {
+    const offset = offsets.get(gap.chain) || 0;
+    const numbers =
+      gap.residue_numbers?.length === gap.residues.length
+        ? gap.residue_numbers
+        : (sequences.get(gap.chain) || [])
+            .slice(gap.index + offset, gap.index + offset + gap.residues.length)
+            .map((residue) => residue.number);
+    offsets.set(gap.chain, offset + gap.residues.length);
+    return numbers.map((number) => `${gap.chain || "_"}:${number}`);
+  });
+};
 
 export function Viewer({
   protein,
@@ -104,7 +150,8 @@ export function Viewer({
   const [showWater, setShowWater] = useState(false),
     [showHetero, setShowHetero] = useState(true),
     [showInteractions, setShowInteractions] = useState(true),
-    [showSurface, setShowSurface] = useState(false);
+    [showSurface, setShowSurface] = useState(false),
+    [stickResidueName, setStickResidueName] = useState<string>();
   const [viewerReady, setViewerReady] = useState(false),
     [modelVersion, setModelVersion] = useState(0),
     [poseVersion, setPoseVersion] = useState(0);
@@ -112,6 +159,31 @@ export function Viewer({
   useEffect(() => {
     onSelectResidueRef.current = onSelectResidue;
   }, [onSelectResidue]);
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        target?.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName || "")
+      )
+        return;
+      if (event.key === "u") {
+        event.preventDefault();
+        setShowWater((current) => !current);
+      } else if (event.key === "z") {
+        event.preventDefault();
+        setStickResidueName(undefined);
+      } else if (aminoAcidShortcuts[event.key]) {
+        event.preventDefault();
+        setStickResidueName(aminoAcidShortcuts[event.key]);
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
   useEffect(() => {
     let alive = true;
     import("3dmol").then(($3Dmol) => {
@@ -506,6 +578,12 @@ export function Viewer({
           }),
         );
     });
+    if (stickResidueName)
+      model.current.setStyle(
+        { hetflag: false, resn: stickResidueName },
+        { stick: { ...ligandStickStyle, radius: 0.18 } },
+        true,
+      );
     if (showHetero && protein)
       (protein.stats.hetero_molecules || [])
         .filter((ligand) =>
@@ -519,6 +597,13 @@ export function Viewer({
     model.current.setStyle(modifiedProteinResidues, {
       cartoon: { color: "#8ccbd4" },
     });
+    repairedResidueKeys(protein).forEach((key) =>
+      model.current.setStyle(
+        residueSelector(key),
+        { cartoon: { color: "#6b7280" } },
+        true,
+      ),
+    );
     if (focusNeighborhood.current)
       model.current.setStyle(
         focusNeighborhood.current,
@@ -534,18 +619,22 @@ export function Viewer({
         (water) => `${water.chain || "_"}:${water.residue_number || ""}`,
       ),
     );
-    selectedResidues.forEach((key) =>
-      model.current.setStyle(
-        residueSelector(key),
-        selectedWaterKeys.has(key)
-          ? { sphere: { color: "#3b82f6", scale: 0.48 } }
-          : {
-              cartoon: { color: "#ffffff" },
-              line: { color: "#ffffff", linewidth: 1 },
-            },
-        true,
-      ),
-    );
+    selectedResidues.forEach((key) => {
+      const selection = residueSelector(key);
+      if (selectedWaterKeys.has(key))
+        model.current.setStyle(selection, {
+          sphere: { color: "#2563eb", scale: 0.48 },
+        });
+      else
+        model.current.setStyle(
+          selection,
+          {
+            cartoon: { color: "#ffffff" },
+            line: { color: "#ffffff", linewidth: 1 },
+          },
+          true,
+        );
+    });
     if (showSurface && surfaceType.current !== undefined) {
       const surfaceColors: Record<string, string> = {
         base: "#5a9fb2",
@@ -613,6 +702,7 @@ export function Viewer({
     visiblePockets,
     visibleStructureLigands,
     selectedResidues,
+    stickResidueName,
   ]);
   useEffect(() => {
     const v = viewer.current;
@@ -842,8 +932,11 @@ export function Viewer({
         </label>
       </div>
       <div className="pointer-events-none absolute bottom-3 right-3 rounded-lg border border-line bg-panel/90 px-3 py-2 text-[10px] text-slate-500 backdrop-blur">
-        PyMOL mouse · L rotate · Ctrl+L set center · M move · R zoom · Wheel
-        slab · Shift+R clip
+        <div>
+          PyMOL mouse · L rotate · Ctrl+L set center · M move · R zoom · Wheel
+          slab · Shift+R clip
+        </div>
+        <div>lowercase 1-letter AA: sticks · z sticks off · u water</div>
       </div>
     </div>
   );

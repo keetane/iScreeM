@@ -36,10 +36,62 @@ from app.services.pocket_volume import (
     pocket_metrics,
     read_p2rank_points,
 )
+from app.services.protein_prep import (
+    _exclude_terminal_missing_residues,
+    _missing_residue_report,
+    _record_added_residue_numbers,
+)
 from app.services.pubchem import resolve_ligand_queries
 from app.services.sdf import split_sdf_records
 from app.services.sdf_export import append_sdf_properties
 from app.services.storage_names import docking_job_root, readable_name, unique_directory_name
+
+
+def test_receptor_repair_skips_terminal_gaps_and_records_internal_residue_ids():
+    class Residue:
+        def __init__(self, residue_id: str):
+            self.id = residue_id
+
+    class Chain:
+        id = "A"
+
+        def __init__(self, residue_ids: list[str]):
+            self.residue_ids = residue_ids
+
+        def residues(self):
+            return iter(Residue(value) for value in self.residue_ids)
+
+    class Topology:
+        def __init__(self, chain: Chain):
+            self.chain = chain
+
+        def chains(self):
+            return iter([self.chain])
+
+    class Fixer:
+        def __init__(self):
+            self.chain = Chain(["10", "13", "14"])
+            self.topology = Topology(self.chain)
+            self.missingResidues = {
+                (0, 0): ["MET"],
+                (0, 1): ["ALA", "GLY"],
+                (0, 3): ["LYS"],
+            }
+
+    fixer = Fixer()
+    _exclude_terminal_missing_residues(fixer)
+    report = _missing_residue_report(fixer)
+    fixer.chain.residue_ids = ["10", "11", "12", "13", "14"]
+
+    assert fixer.missingResidues == {(0, 1): ["ALA", "GLY"]}
+    assert _record_added_residue_numbers(fixer, report) == [
+        {
+            "chain": "A",
+            "index": 1,
+            "residues": ["ALA", "GLY"],
+            "residue_numbers": ["11", "12"],
+        }
+    ]
 
 
 def test_cancel_queued_job_without_rq_id_becomes_terminal():
