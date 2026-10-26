@@ -164,6 +164,16 @@ def parse_pdb(path: Path) -> dict:
     }
 
 
+def select_docking_receptor_source(
+    candidates: list[tuple[str, Path | None]],
+) -> tuple[Path, str] | None:
+    """Select the first existing receptor, preferring prepared candidates."""
+    for preparation, path in candidates:
+        if path is not None and path.is_file():
+            return path, preparation
+    return None
+
+
 def write_docking_receptor(source: Path, destination: Path, keep_interacting_waters: bool = False, contact_distance: float = 3.6) -> dict[str, int]:
     """Write the receptor used for docking without organic HETATM records.
 
@@ -171,7 +181,18 @@ def write_docking_receptor(source: Path, destination: Path, keep_interacting_wat
     receptor N/O/S atom are retained.  Other HETATM and all CONECT records are
     discarded so dangling bonds cannot leak into the docking input.
     """
-    lines = source.read_text(errors="replace").splitlines(keepends=True)
+    if source.suffix.lower() in {".cif", ".mmcif"}:
+        try:
+            import gemmi
+        except ImportError as exc:
+            raise ValueError("CIF/mmCIF docking requires the gemmi package") from exc
+        try:
+            pdb_text = gemmi.read_structure(str(source)).make_pdb_string()
+        except (RuntimeError, ValueError) as exc:
+            raise ValueError(f"Could not convert CIF/mmCIF receptor to PDB: {exc}") from exc
+        lines = pdb_text.splitlines(keepends=True)
+    else:
+        lines = source.read_text(errors="replace").splitlines(keepends=True)
     receptor_polar: list[tuple[float, float, float]] = []
     waters: dict[tuple[str, str, str, str], list[tuple[str, tuple[float, float, float], str]]] = {}
     for line in lines:
@@ -212,7 +233,7 @@ def write_docking_receptor(source: Path, destination: Path, keep_interacting_wat
             continue
         kept.append(line)
     if not atom_count:
-        raise ValueError("Prepared receptor contains no ATOM records after removing HETATM")
+        raise ValueError("Receptor source contains no ATOM records after removing HETATM")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("".join(kept))
     return {"receptor_atom_count": atom_count, "water_atom_count": water_atom_count, "water_residue_count": len(retained)}

@@ -1256,7 +1256,7 @@ function DockingSetup({
   );
   const runnable =
     !!tools[engine]?.available &&
-    !!protein?.prepared_path &&
+    !!protein &&
     selectedLigands.size + uploadedCount > 0;
   const uploadFile = (file?: File) => {
     if (!file) return;
@@ -1301,7 +1301,7 @@ function DockingSetup({
           label="Receptor"
           value={
             protein
-              ? `${protein.name}${protein.prepared_path ? " · Prepared PDB" : " · Preparation required"}`
+              ? `${protein.name}${protein.prepared_path || protein.prepared_receptor_path ? " · Prepared PDB" : " · Original structure (unprepared)"}`
               : "Select a receptor"
           }
         />

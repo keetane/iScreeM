@@ -40,6 +40,7 @@ from .services.pdb import (
     parse_structure,
     residue_coordinates,
     restore_hetero_connectivity,
+    select_docking_receptor_source,
 )
 from .services.pocket_volume import (
     VOLUME_METHOD,
@@ -690,9 +691,16 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
         pocket = db.get(Pocket, grid.pocket_id)
         if not pocket or pocket.protein_id != protein.id:
             raise HTTPException(422, "Selected grid belongs to a different protein")
-    receptor_path = resolve_data_path(protein.prepared_path or protein.prepared_receptor_path)
-    if receptor_path is None or not receptor_path.is_file():
-        raise HTTPException(422, "Receptor must be prepared with PDBFixer/PDB2PQR before docking")
+    receptor_source = select_docking_receptor_source(
+        [
+            ("prepared", resolve_data_path(protein.prepared_path)),
+            ("prepared", resolve_data_path(protein.prepared_receptor_path)),
+            ("original_unprepared", resolve_data_path(protein.original_path)),
+        ]
+    )
+    if receptor_source is None:
+        raise HTTPException(422, "Receptor structure file is missing")
+    _, receptor_preparation = receptor_source
     if not body.ligand_ids and not body.upload_ids:
         raise HTTPException(422, "Select library ligands or upload a docking ligand file")
     ligands = (
@@ -717,6 +725,7 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
         raise HTTPException(422, str(exc)) from exc
     snapshot = body.model_dump(exclude_none=True)
     snapshot["search_mode"] = "grid" if grid else "global_without_grid"
+    snapshot["receptor_preparation"] = receptor_preparation
     snapshot["uploaded_ligands"] = uploaded_ligands
     snapshot["auto_prepare_unprepared_ligands"] = True
     item = DockingJob(

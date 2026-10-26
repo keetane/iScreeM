@@ -22,6 +22,7 @@ from app.services.pdb import (
     parse_structure,
     receptor_atom_coordinates,
     restore_hetero_connectivity,
+    select_docking_receptor_source,
     write_docking_receptor,
     write_receptor_without_hetatm,
 )
@@ -327,6 +328,36 @@ def test_docking_receptor_keeps_only_interacting_waters(tmp_path: Path):
     assert "A 101" in written
     assert "A 102" not in written
     assert "ATP" not in written
+
+
+def test_docking_receptor_source_falls_back_to_unprepared_original(tmp_path: Path):
+    original = tmp_path / "original.pdb"
+    original.write_text("ATOM\n")
+
+    selected = select_docking_receptor_source(
+        [
+            ("prepared", tmp_path / "missing-prepared.pdb"),
+            ("prepared", None),
+            ("original_unprepared", original),
+        ]
+    )
+
+    assert selected == (original, "original_unprepared")
+
+
+def test_docking_receptor_converts_unprepared_cif_to_pdb(tmp_path: Path):
+    source = Path(__file__).parent / "fixtures" / "minimal_alanine.cif"
+    destination = tmp_path / "receptor_no_hetatm.pdb"
+
+    stats = write_docking_receptor(source, destination)
+
+    assert stats == {
+        "receptor_atom_count": 5,
+        "water_atom_count": 0,
+        "water_residue_count": 0,
+    }
+    assert len(receptor_atom_coordinates(destination)) == 5
+    assert "ATOM" in destination.read_text()
 
 
 def test_global_search_box_covers_all_receptor_atoms(tmp_path: Path):

@@ -23,6 +23,7 @@ from .services.pdb import (
     parse_structure,
     receptor_atom_coordinates,
     restore_hetero_connectivity,
+    select_docking_receptor_source,
     write_docking_receptor,
 )
 from .services.pocket_volume import find_p2rank_points, pocket_metrics, read_p2rank_points
@@ -303,15 +304,35 @@ def run_docking(job_id: str):
     job_root = docking_job_root(settings.data_dir / "projects" / job.project_id, job.id)
     job_root.mkdir(parents=True, exist_ok=True)
     try:
-        receptor_source = protein.prepared_path or protein.prepared_receptor_path
-        if not receptor_source:
-            raise ValueError("Protein has no prepared PDB")
+        receptor_selection = select_docking_receptor_source(
+            [
+                (
+                    "prepared",
+                    _absolute_path(protein.prepared_path)
+                    if protein.prepared_path
+                    else None,
+                ),
+                (
+                    "prepared",
+                    _absolute_path(protein.prepared_receptor_path)
+                    if protein.prepared_receptor_path
+                    else None,
+                ),
+                (
+                    "original_unprepared",
+                    _absolute_path(protein.original_path) if protein.original_path else None,
+                ),
+            ]
+        )
+        if receptor_selection is None:
+            raise ValueError("Protein structure file is missing")
+        receptor_source, receptor_preparation = receptor_selection
         keep_waters = bool(params.get("with_h2o", False))
         receptor_input = job_root / (
             "receptor_with_interacting_h2o.pdb" if keep_waters else "receptor_no_hetatm.pdb"
         )
         receptor_stats = write_docking_receptor(
-            _absolute_path(receptor_source), receptor_input, keep_interacting_waters=keep_waters
+            receptor_source, receptor_input, keep_interacting_waters=keep_waters
         )
         if grid:
             search_center, search_size, search_mode = grid.center, grid.size, "grid"
@@ -334,7 +355,8 @@ def run_docking(job_id: str):
                 "search_size": search_size,
                 "exclude_organic_hetatm": True,
                 "with_h2o": bool(params.get("with_h2o", False)),
-                "receptor_source": str(_absolute_path(receptor_source)),
+                "receptor_source": str(receptor_source),
+                "receptor_preparation": receptor_preparation,
                 "receptor_used": str(receptor_input),
                 **receptor_stats,
             },
