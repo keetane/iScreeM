@@ -1142,7 +1142,9 @@ function LigandInput({
   project: Project;
   act: (fn: () => Promise<unknown>, msg?: string) => void;
 }) {
-  const [text, setText] = useState("aspirin\ncaffeine"),
+  const [text, setText] = useState(
+    "aspirin\ncaffeine\nCC(C)CC1=CC=C(C=C1)C(C)C(=O)O ibuprofen",
+  ),
     [file, setFile] = useState<File>(),
     [showKetcher, setShowKetcher] = useState(false);
   const importItems = (
