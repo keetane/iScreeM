@@ -9,5 +9,7 @@ export type Grid={id:string;project_id:string;name:string;center:Axis3;size:Axis
 export type Ligand={id:string;ligand_code:string;name:string;smiles:string;descriptors:Record<string,number|string>;status:string;error:string|null;prepared_sdf_path:string|null;prepared_pdbqt_path:string|null}
 export type Job={id:string;project_id:string;name:string;kind:string;engine:string|null;status:string;total_count:number;completed_count:number;success_count:number;failed_count:number;error:string|null;created_at:string;cancel_requested:boolean}
 export type DockingResult={key:string;rank:number;job_id:string;job_name:string;engine:string|null;created_at:string;protein_id:string;receptor_name:string;ligand_id:string|null;ligand_code:string;ligand_name:string;smiles:string;pose:number;affinity:number|null;scores?:Record<string,number|null>;pose_url:string}
+export type DockingSummary={job_id:string;job_name:string;filename:string;relative_path:string;updated_at:string;size:number}
+export type DockingSummaryCatalog={directory:string;files:DockingSummary[]}
 export type DockingUpload={upload_id:string;original_name:string;ligands:{ligand_code:string;name:string;sdf_path:string}[]}
 export type Project={id:string;name:string;proteins:Protein[];pockets:Pocket[];grids:Grid[];ligands:Ligand[]}

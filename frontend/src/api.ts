@@ -131,6 +131,20 @@ export const api = {
     request<import("./types").DockingResult[]>(
       `/api/projects/${projectId}/docking-results`,
     ),
+  dockingSummaries: (projectId: string) =>
+    request<import("./types").DockingSummaryCatalog>(
+      `/api/projects/${projectId}/docking-summaries`,
+    ),
+  dockingSummaryFile: async (projectId: string, jobId: string) => {
+    const response = await fetch(
+      `/api/projects/${projectId}/docking-results/${jobId}/scores.csv`,
+    );
+    if (!response.ok)
+      throw new Error(`Summary CSV request failed (${response.status})`);
+    return new File([await response.blob()], `${jobId}-scores.csv`, {
+      type: "text/csv",
+    });
+  },
   deleteDockingResultLigands: (
     projectId: string,
     ligands: { job_id: string; ligand_code: string }[],

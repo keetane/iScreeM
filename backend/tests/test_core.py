@@ -128,6 +128,58 @@ def test_cancel_queued_job_without_rq_id_becomes_terminal():
     assert job.status == JobStatus.CANCELLED
 
 
+def test_docking_summaries_lists_project_score_files(tmp_path: Path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from app import main
+    from app.db import Base
+    from app.models import DockingJob, Project
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(main.settings, "data_dir", tmp_path)
+
+    with Session(engine) as db:
+        project = Project(id="20261027_test", name="Test")
+        completed = DockingJob(
+            id="20261027_docking_5ajv",
+            project_id=project.id,
+            name="smina docking · 5AJV",
+            kind="DOCKING",
+        )
+        unfinished = DockingJob(
+            id="20261027_docking_pending",
+            project_id=project.id,
+            name="Pending docking",
+            kind="DOCKING",
+        )
+        db.add_all([project, completed, unfinished])
+        db.commit()
+        score_path = (
+            tmp_path
+            / "projects"
+            / project.id
+            / "docking"
+            / completed.id
+            / "scores.csv"
+        )
+        score_path.parent.mkdir(parents=True)
+        score_path.write_text("rank,ligand_code,pose,affinity\n1,ligand_0001,1,-7.0\n")
+
+        catalog = main.docking_summaries(project.id, db)
+
+    assert catalog["directory"] == str(
+        (tmp_path / "projects" / project.id / "docking").resolve()
+    )
+    assert len(catalog["files"]) == 1
+    assert catalog["files"][0]["job_id"] == completed.id
+    assert catalog["files"][0]["relative_path"] == (
+        f"docking/{completed.id}/scores.csv"
+    )
+    assert catalog["files"][0]["size"] == score_path.stat().st_size
+
+
 def test_delete_protein_cancels_stale_queued_job(tmp_path: Path, monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session

@@ -23,6 +23,7 @@ import {
   EyeOff,
   FlaskConical,
   Focus,
+  FolderOpen,
   FolderPlus,
   Hexagon,
   Pencil,
@@ -41,6 +42,8 @@ import { api } from "./api";
 import type {
   ChainSequence,
   DockingResult,
+  DockingSummary,
+  DockingSummaryCatalog,
   DockingUpload,
   Grid,
   Job,
@@ -2568,6 +2571,11 @@ function ResultsBottomEnhanced({
     direction: "asc" | "desc";
   }>({ key: "rank", direction: "asc" });
   const [summaryMessage, setSummaryMessage] = useState("");
+  const [summaryCatalog, setSummaryCatalog] =
+    useState<DockingSummaryCatalog>();
+  const [summaryPickerOpen, setSummaryPickerOpen] = useState(false);
+  const [summaryPickerLoading, setSummaryPickerLoading] = useState(false);
+  const [loadingSummaryId, setLoadingSummaryId] = useState<string>();
   const summaryInput = useRef<HTMLInputElement>(null);
   const scoreColumns = Array.from(
     new Set(results.flatMap((row) => Object.keys(row.scores || {}))),
@@ -2819,14 +2827,128 @@ function ResultsBottomEnhanced({
         );
       setResults(updated);
       setSummaryMessage(`${file.name}: ${matched} rows loaded`);
+      return true;
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       if (summaryInput.current) summaryInput.current.value = "";
     }
   };
+  const openSummaryPicker = async () => {
+    if (!project) {
+      summaryInput.current?.click();
+      return;
+    }
+    setSummaryPickerLoading(true);
+    try {
+      setSummaryCatalog(await api.dockingSummaries(project.id));
+      setSummaryPickerOpen(true);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSummaryPickerLoading(false);
+    }
+  };
+  const loadProjectSummary = async (summary: DockingSummary) => {
+    if (!project) return;
+    setLoadingSummaryId(summary.job_id);
+    try {
+      const file = await api.dockingSummaryFile(project.id, summary.job_id);
+      if (await loadSummary(file)) setSummaryPickerOpen(false);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingSummaryId(undefined);
+    }
+  };
   const scoreCell = (row: DockingResult, key: string) =>
     format3(key === "affinity" ? row.affinity : row.scores?.[key]);
+  const summaryPicker = summaryPickerOpen && (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-5"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Load docking summary CSV"
+      onMouseDown={() => setSummaryPickerOpen(false)}
+    >
+      <div
+        className="w-full max-w-3xl rounded-xl border border-line bg-panel shadow-2xl"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 border-b border-line p-4">
+          <FolderOpen className="mt-0.5 h-5 w-5 text-cyan" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-slate-100">
+              Project docking summaries
+            </div>
+            <div className="mt-1 truncate font-mono text-[10px] text-slate-500">
+              {summaryCatalog?.directory}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Close summary CSV picker"
+            onClick={() => setSummaryPickerOpen(false)}
+          >
+            <X />
+          </button>
+        </div>
+        <div className="max-h-[55vh] space-y-2 overflow-auto p-4">
+          {summaryCatalog?.files.length ? (
+            summaryCatalog.files.map((summary) => (
+              <button
+                key={summary.job_id}
+                type="button"
+                className="flex w-full items-center gap-3 rounded-lg border border-line bg-slate-950/30 px-3 py-3 text-left hover:border-cyan/50 hover:bg-cyan/5 disabled:opacity-50"
+                disabled={Boolean(loadingSummaryId)}
+                onClick={() => loadProjectSummary(summary)}
+              >
+                <Database className="h-5 w-5 shrink-0 text-mint" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-slate-200">
+                    {summary.job_name}
+                  </span>
+                  <span className="block truncate font-mono text-[10px] text-slate-500">
+                    {summary.relative_path}
+                  </span>
+                </span>
+                <span className="shrink-0 text-right text-[10px] text-slate-500">
+                  <span className="block">
+                    {new Date(summary.updated_at).toLocaleString()}
+                  </span>
+                  <span className="block">
+                    {loadingSummaryId === summary.job_id
+                      ? "Loading…"
+                      : `${Math.max(1, Math.ceil(summary.size / 1024))} KB`}
+                  </span>
+                </span>
+              </button>
+            ))
+          ) : (
+            <div className="empty-panel min-h-28">
+              No summary CSV files are available in this project's docking
+              directory.
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end border-t border-line p-4">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setSummaryPickerOpen(false);
+              summaryInput.current?.click();
+            }}
+          >
+            <Upload />
+            Browse other CSV…
+          </button>
+        </div>
+      </div>
+    </div>
+  );
   if (!results.length)
     return (
       <div className="p-4">
@@ -2844,10 +2966,11 @@ function ResultsBottomEnhanced({
             />
             <button
               className="btn-secondary"
-              onClick={() => summaryInput.current?.click()}
+              disabled={summaryPickerLoading}
+              onClick={openSummaryPicker}
             >
-              <Upload />
-              Load summary CSV
+              <FolderOpen />
+              {summaryPickerLoading ? "Opening…" : "Load summary CSV"}
             </button>
             <button className="btn-secondary" onClick={refresh}>
               <RefreshCw />
@@ -2864,6 +2987,7 @@ function ResultsBottomEnhanced({
             are available.
           </div>
         </div>
+        {summaryPicker}
       </div>
     );
   return (
@@ -2893,10 +3017,11 @@ function ResultsBottomEnhanced({
           />
           <button
             className="btn-secondary"
-            onClick={() => summaryInput.current?.click()}
+            disabled={summaryPickerLoading}
+            onClick={openSummaryPicker}
           >
-            <Upload />
-            Load summary CSV
+            <FolderOpen />
+            {summaryPickerLoading ? "Opening…" : "Load summary CSV"}
           </button>
           <button
             className="btn-secondary text-red-300"
@@ -3108,6 +3233,7 @@ function ResultsBottomEnhanced({
         summary
         CSVは現在のposeファイルに一致するスコア行だけを読み込み、元CSVとSDFは変更しません。
       </div>
+      {summaryPicker}
     </div>
   );
 }

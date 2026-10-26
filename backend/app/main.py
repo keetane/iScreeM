@@ -4,6 +4,7 @@ import io
 import json
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -1090,6 +1091,35 @@ def docking_results(project_id: str, db: Session = Depends(get_db)):
     for rank, item in enumerate(rows, start=1):
         item["rank"] = rank
     return rows
+
+
+@app.get("/api/projects/{project_id}/docking-summaries")
+def docking_summaries(project_id: str, db: Session = Depends(get_db)):
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    project_root = (settings.data_dir / "projects" / project_id).resolve()
+    docking_root = (project_root / "docking").resolve()
+    files: list[dict] = []
+    for job in db.scalars(
+        select(DockingJob)
+        .where(DockingJob.project_id == project_id, DockingJob.kind == "DOCKING")
+        .order_by(DockingJob.created_at.desc())
+    ):
+        path = _docking_root(project_id, job.id) / "scores.csv"
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        files.append(
+            {
+                "job_id": job.id,
+                "job_name": job.name,
+                "filename": path.name,
+                "relative_path": str(path.relative_to(project_root)),
+                "updated_at": datetime.fromtimestamp(stat.st_mtime, UTC),
+                "size": stat.st_size,
+            }
+        )
+    return {"directory": str(docking_root), "files": files}
 
 
 @app.post("/api/projects/{project_id}/docking-results/delete-ligands")
