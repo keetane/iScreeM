@@ -2608,6 +2608,14 @@ function ResultsBottomEnhanced({
           });
     return sort.direction === "asc" ? comparison : -comparison;
   });
+  const selectedResultCount = results.reduce(
+    (count, row) => count + Number(selectedKeys.has(row.key)),
+    0,
+  );
+  const allResultsSelected =
+    results.length > 0 && selectedResultCount === results.length;
+  const someResultsSelected =
+    selectedResultCount > 0 && !allResultsSelected;
   const ordered = sortedResults.filter((row) => selectedKeys.has(row.key));
   const navigation = ordered.length ? ordered : sortedResults;
   const setSortKey = (key: ResultSortKey) =>
@@ -2642,6 +2650,12 @@ function ResultsBottomEnhanced({
     next.has(row.key) ? next.delete(row.key) : next.add(row.key);
     setSelectedKeys(next);
   };
+  const toggleAll = () =>
+    setSelectedKeys(
+      allResultsSelected
+        ? new Set()
+        : new Set(results.map((row) => row.key)),
+    );
   const toggleVisible = (row: DockingResult) => {
     const next = new Set(visibleKeys);
     next.has(row.key) ? next.delete(row.key) : next.add(row.key);
@@ -3072,7 +3086,25 @@ function ResultsBottomEnhanced({
         <table>
           <thead>
             <tr>
-              <th></th>
+              <th>
+                <input
+                  type="checkbox"
+                  aria-label="Select all docking results"
+                  aria-checked={
+                    someResultsSelected ? "mixed" : allResultsSelected
+                  }
+                  title={
+                    allResultsSelected
+                      ? "Clear all docking result selections"
+                      : "Select all docking results"
+                  }
+                  checked={allResultsSelected}
+                  ref={(input) => {
+                    if (input) input.indeterminate = someResultsSelected;
+                  }}
+                  onChange={toggleAll}
+                />
+              </th>
               <th
                 onClick={() => setSortKey("rank")}
                 className="cursor-pointer select-none"
