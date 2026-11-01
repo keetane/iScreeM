@@ -42,6 +42,7 @@ import { api } from "./api";
 import type {
   ChainSequence,
   DockingResult,
+  DockingResultPage,
   DockingSummary,
   DockingSummaryCatalog,
   DockingUpload,
@@ -208,6 +209,9 @@ export default function App() {
     [selectedResidues, setSelectedResidues] = useState<Set<string>>(new Set()),
     [selectedLigands, setSelectedLigands] = useState<Set<string>>(new Set()),
     [dockingResults, setDockingResults] = useState<DockingResult[]>([]),
+    [dockingResultCache, setDockingResultCache] = useState<
+      Map<string, DockingResult>
+    >(new Map()),
     [selectedResultKeys, setSelectedResultKeys] = useState<Set<string>>(
       new Set(),
     ),
@@ -221,6 +225,7 @@ export default function App() {
     }>(),
     [focusRequest, setFocusRequest] = useState<ViewerFocusRequest>(),
     [notice, setNotice] = useState<{ type: "error" | "info"; text: string }>(),
+    [updatingResultJobId, setUpdatingResultJobId] = useState<string>(),
     [busy, setBusy] = useState(false);
   const protein =
     project?.proteins.find((item) => item.id === selectedProteinId) ||
@@ -228,43 +233,49 @@ export default function App() {
   const selectedDockingPoses = useMemo(() => {
     const displayedKeys = new Set(visibleResultKeys);
     if (activePose) displayedKeys.add(activePose.key);
-    return dockingResults
-      .filter((row) => displayedKeys.has(row.key))
+    return [...displayedKeys]
+      .map((key) =>
+        activePose?.key === key ? activePose : dockingResultCache.get(key),
+      )
+      .filter((row): row is DockingResult => Boolean(row))
       .map((row) => ({ key: row.key, url: row.pose_url, pose: row.pose }));
-  }, [activePose, dockingResults, visibleResultKeys]);
+  }, [activePose, dockingResultCache, visibleResultKeys]);
   useEffect(() => {
     setVisibleStructureLigands(
       new Set((protein?.stats.hetero_molecules || []).map(structureLigandKey)),
     );
   }, [protein?.id]);
   useEffect(() => {
-    if (tab !== "docking" || !project) return;
-    api
-      .dockingResults(project.id)
-      .then((rows) => {
-        setDockingResults(rows);
-        const available = new Set(rows.map((row) => row.key));
-        setSelectedResultKeys(
-          (current) =>
-            new Set([...current].filter((key) => available.has(key))),
-        );
-        setVisibleResultKeys(
-          (current) =>
-            new Set([...current].filter((key) => available.has(key))),
-        );
-        setActivePose((current) =>
-          current && rows.some((row) => row.key === current.key)
-            ? current
-            : undefined,
-        );
-      })
-      .catch((error) =>
-        setNotice({
-          type: "error",
-          text: error instanceof Error ? error.message : String(error),
-        }),
-      );
-  }, [tab, project?.id]);
+    setDockingResults([]);
+    setDockingResultCache(new Map());
+    setSelectedResultKeys(new Set());
+    setVisibleResultKeys(new Set());
+    setActivePose(undefined);
+  }, [project?.id]);
+  const applyDockingResults = useCallback((rows: DockingResult[]) => {
+    setDockingResults(rows);
+    setDockingResultCache((current) => {
+      const next = new Map(current);
+      rows.forEach((row) => next.set(row.key, row));
+      return next;
+    });
+  }, []);
+  const queryDockingResults = useCallback(
+    (page: number, sort: string, direction: "asc" | "desc") =>
+      project
+        ? api.dockingResults(project.id, { page, sort, direction })
+        : Promise.resolve({
+            items: [],
+            total: 0,
+            page: 1,
+            page_size: 100,
+            pages: 1,
+            sort_key: sort,
+            direction,
+            score_columns: [],
+          } satisfies DockingResultPage),
+    [project?.id],
+  );
   const toggleSelectedResidue = useCallback(
     (key: string) =>
       setSelectedResidues((current) => {
@@ -392,6 +403,53 @@ export default function App() {
       });
     } finally {
       setBusy(false);
+    }
+  };
+  const setDockingJobVisibility = async (job: Job, visible: boolean) => {
+    setUpdatingResultJobId(job.id);
+    setNotice(undefined);
+    try {
+      const response = await api.setDockingResultJobVisibility(
+        job.project_id,
+        job.id,
+        visible,
+      );
+      setJobs((current) =>
+        current.map((item) =>
+          item.id === job.id ? { ...item, result_visible: visible } : item,
+        ),
+      );
+      if (!visible) {
+        const hiddenKeys = new Set(
+          [...dockingResultCache]
+            .filter(([, row]) => row.job_id === job.id)
+            .map(([key]) => key),
+        );
+        setSelectedResultKeys(
+          new Set(
+            [...selectedResultKeys].filter((key) => !hiddenKeys.has(key)),
+          ),
+        );
+        setVisibleResultKeys(
+          new Set(
+            [...visibleResultKeys].filter((key) => !hiddenKeys.has(key)),
+          ),
+        );
+        if (activePose?.job_id === job.id) setActivePose(undefined);
+      }
+      setNotice({
+        type: "info",
+        text: visible
+          ? `Showing ${job.name}${response.restored_ligands ? ` · restored ${response.restored_ligands} hidden ligand(s)` : ""}`
+          : `Hidden ${job.name} from Docking Results`,
+      });
+    } catch (error) {
+      setNotice({
+        type: "error",
+        text: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setUpdatingResultJobId(undefined);
     }
   };
   const newProject = async () => {
@@ -628,6 +686,8 @@ export default function App() {
               setSelectedProteinId={selectProtein}
               activeGrid={activeGrid}
               jobs={jobs}
+              updatingResultJobId={updatingResultJobId}
+              onSetDockingJobVisibility={setDockingJobVisibility}
               selectedLigands={selectedLigands}
               setSelectedLigands={setSelectedLigands}
               selectedResidues={selectedResidues}
@@ -642,7 +702,9 @@ export default function App() {
               setActiveGrid={setActiveGrid}
               act={act}
               dockingResults={dockingResults}
-              setDockingResults={setDockingResults}
+              setDockingResults={applyDockingResults}
+              dockingResultCache={dockingResultCache}
+              queryDockingResults={queryDockingResults}
               selectedResultKeys={selectedResultKeys}
               setSelectedResultKeys={setSelectedResultKeys}
               visibleResultKeys={visibleResultKeys}
@@ -658,10 +720,6 @@ export default function App() {
                 setActivePose(row);
                 setDockingPoseFocus({ key: row.key, nonce: Date.now() });
               }}
-              onRefreshResults={() =>
-                project &&
-                api.dockingResults(project.id).then(setDockingResults)
-              }
               onNotice={(text) => setNotice({ type: "error", text })}
             />
           </section>
@@ -1266,11 +1324,14 @@ function DockingSetup({
     [exhaustiveness, setExhaustiveness] = useState(8),
     [modes, setModes] = useState(3),
     [seed, setSeed] = useState("0"),
+    [comment, setComment] = useState(""),
     [withH2O, setWithH2O] = useState(false),
+    [localOnly, setLocalOnly] = useState(false),
+    [searchSelection, setSearchSelection] = useState("global"),
     [uploads, setUploads] = useState<DockingUpload[]>([]);
   const uploadInput = useRef<HTMLInputElement>(null);
   const uploadedCount = uploads.reduce(
-    (total, batch) => total + batch.ligands.length,
+    (total, batch) => total + batch.ligand_count,
     0,
   );
   const waterKeys = new Set(
@@ -1279,6 +1340,28 @@ function DockingSetup({
     ),
   );
   const selectedH2O = [...selectedResidues].filter((key) => waterKeys.has(key));
+  const proteinPocketIds = new Set(
+    project.pockets
+      .filter((pocket) => pocket.protein_id === protein?.id)
+      .map((pocket) => pocket.id),
+  );
+  const dockingGrids = project.grids.filter(
+    (candidate) =>
+      !candidate.pocket_id || proteinPocketIds.has(candidate.pocket_id),
+  );
+  const autoboxLigands = (protein?.stats.hetero_molecules || []).filter(
+    (ligand) => Boolean(ligand.name && ligand.residue_number),
+  );
+  const selectedGrid = dockingGrids.find(
+    (candidate) => searchSelection === `grid:${candidate.id}`,
+  );
+  const selectedAutoboxLigand = autoboxLigands.find(
+    (ligand) =>
+      searchSelection === `autobox:${structureLigandKey(ligand)}`,
+  );
+  useEffect(() => {
+    setSearchSelection(grid ? `grid:${grid.id}` : "global");
+  }, [protein?.id, grid?.id]);
   useEffect(() => {
     if (selectedH2O.length === 0 && withH2O) setWithH2O(false);
   }, [selectedH2O.length, withH2O]);
@@ -1292,7 +1375,7 @@ function DockingSetup({
       const uploaded = await api.uploadDockingLigands(project.id, file);
       setUploads((current) => [...current, uploaded]);
       if (uploadInput.current) uploadInput.current.value = "";
-    }, `${file.name} converted to 3D docking inputs`);
+    }, `${file.name} indexed; 3D preparation will run during docking`);
   };
   return (
     <>
@@ -1333,10 +1416,38 @@ function DockingSetup({
               : "Select a receptor"
           }
         />
-        <Field
-          label="Grid"
-          value={grid?.name || "Global search without grid"}
-        />
+        <div>
+          <div className="label">Grid / search area</div>
+          <select
+            className="input"
+            value={searchSelection}
+            onChange={(event) => setSearchSelection(event.target.value)}
+          >
+            <option value="global">Global search without grid</option>
+            {dockingGrids.length > 0 && (
+              <optgroup label="Grid">
+                {dockingGrids.map((candidate) => (
+                  <option key={candidate.id} value={`grid:${candidate.id}`}>
+                    {candidate.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            {autoboxLigands.length > 0 && (
+              <optgroup label="autobox_ligand · original structure">
+                {autoboxLigands.map((ligand) => (
+                  <option
+                    key={structureLigandKey(ligand)}
+                    value={`autobox:${structureLigandKey(ligand)}`}
+                  >
+                    {ligand.name} · {ligand.chain || "_"}:
+                    {ligand.residue_number || "?"} · {ligand.atom_count} atoms
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
         <div>
           <div className="label">Ligands</div>
           <div className="grid grid-cols-2 gap-2">
@@ -1360,10 +1471,10 @@ function DockingSetup({
           </div>
           {uploads.length > 0 && (
             <div className="mt-2 text-[10px] text-slate-500">
-              Job-only 3D inputs:{" "}
+              Deferred docking inputs:{" "}
               {uploads
                 .map(
-                  (batch) => `${batch.original_name} (${batch.ligands.length})`,
+                  (batch) => `${batch.original_name} (${batch.ligand_count})`,
                 )
                 .join(", ")}
             </div>
@@ -1395,6 +1506,14 @@ function DockingSetup({
                 />
               </div>
             </div>
+            <label className="flex h-10 items-center gap-2 text-xs font-semibold text-slate-200">
+              <input
+                type="checkbox"
+                checked={localOnly}
+                onChange={(event) => setLocalOnly(event.target.checked)}
+              />
+              Local only
+            </label>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="label">Exhaustiveness</div>
@@ -1417,6 +1536,16 @@ function DockingSetup({
                 />
               </div>
             </div>
+            <div>
+              <div className="label">Comment</div>
+              <input
+                className="input"
+                type="text"
+                maxLength={120}
+                value={comment}
+                onChange={(event) => setComment(event.target.value)}
+              />
+            </div>
           </div>
         </details>
         <button
@@ -1427,17 +1556,29 @@ function DockingSetup({
             act(
               () =>
                 api.runDocking(project.id, {
-                  name: `${engine} docking · ${protein.name}${grid ? "" : " · global"}`,
+                  name: `${engine} docking · ${protein.name}${selectedGrid ? "" : selectedAutoboxLigand ? ` · autobox ${selectedAutoboxLigand.name}` : " · global"}`,
                   protein_id: protein.id,
-                  ...(grid ? { grid_id: grid.id } : {}),
+                  ...(selectedGrid ? { grid_id: selectedGrid.id } : {}),
+                  ...(selectedAutoboxLigand
+                    ? {
+                        autobox_ligand: {
+                          name: selectedAutoboxLigand.name,
+                          chain: selectedAutoboxLigand.chain || "_",
+                          residue_number:
+                            selectedAutoboxLigand.residue_number || "",
+                        },
+                      }
+                    : {}),
                   ligand_ids: [...selectedLigands],
                   upload_ids: uploads.map((batch) => batch.upload_id),
                   with_selected_h2o: withH2O,
                   selected_h2o: withH2O ? selectedH2O : [],
                   engine,
+                  comment: comment.trim(),
                   exhaustiveness,
                   num_modes: modes,
                   seed: seed.trim() === "" ? null : Number(seed),
+                  local_only: localOnly,
                   ...(engine === "gnina" ? { cnn_scoring: "rescore" } : {}),
                 }),
               "Docking job queued",
@@ -1478,6 +1619,8 @@ function BottomPanel(props: {
   setSelectedProteinId: (id: string) => void;
   activeGrid?: Grid;
   jobs: Job[];
+  updatingResultJobId?: string;
+  onSetDockingJobVisibility: (job: Job, visible: boolean) => Promise<void>;
   tools: Record<string, Tool>;
   selectedLigands: Set<string>;
   setSelectedLigands: (x: Set<string>) => void;
@@ -1492,6 +1635,12 @@ function BottomPanel(props: {
   act: (fn: () => Promise<unknown>, msg?: string) => void;
   dockingResults: DockingResult[];
   setDockingResults: (x: DockingResult[]) => void;
+  dockingResultCache: Map<string, DockingResult>;
+  queryDockingResults: (
+    page: number,
+    sort: string,
+    direction: "asc" | "desc",
+  ) => Promise<DockingResultPage>;
   selectedResultKeys: Set<string>;
   setSelectedResultKeys: (x: Set<string>) => void;
   visibleResultKeys: Set<string>;
@@ -1499,13 +1648,20 @@ function BottomPanel(props: {
   activePose?: DockingResult;
   setActivePose: (x: DockingResult | undefined) => void;
   onPoseFocus: (row: DockingResult) => void;
-  onRefreshResults: () => void;
   onNotice: (text: string) => void;
 }) {
   const { tab, project, jobs } = props;
   if (tab === "protein") return <ProteinBottom {...props} />;
   if (tab === "ligands") return <LigandBottom {...props} />;
-  if (tab === "jobs") return <JobsBottom jobs={jobs} act={props.act} />;
+  if (tab === "jobs")
+    return (
+      <JobsBottom
+        jobs={jobs}
+        act={props.act}
+        updatingResultJobId={props.updatingResultJobId}
+        onSetDockingJobVisibility={props.onSetDockingJobVisibility}
+      />
+    );
   if (tab === "licenses") return <LicensesBottom />;
   if (tab === "docking")
     return (
@@ -1514,6 +1670,8 @@ function BottomPanel(props: {
         tools={props.tools}
         results={props.dockingResults}
         setResults={props.setDockingResults}
+        resultCache={props.dockingResultCache}
+        queryResults={props.queryDockingResults}
         selectedKeys={props.selectedResultKeys}
         setSelectedKeys={props.setSelectedResultKeys}
         visibleKeys={props.visibleResultKeys}
@@ -1521,7 +1679,6 @@ function BottomPanel(props: {
         activePose={props.activePose}
         setActivePose={props.setActivePose}
         onPoseFocus={props.onPoseFocus}
-        refresh={props.onRefreshResults}
         onNotice={props.onNotice}
       />
     );
@@ -2371,10 +2528,24 @@ function LigandBottom({
 function JobsBottom({
   jobs,
   act,
+  updatingResultJobId,
+  onSetDockingJobVisibility,
 }: {
   jobs: Job[];
   act: (fn: () => Promise<unknown>, msg?: string) => void;
+  updatingResultJobId?: string;
+  onSetDockingJobVisibility: (job: Job, visible: boolean) => Promise<void>;
 }) {
+  const visibleJobs = useMemo(
+    () =>
+      jobs.filter(
+        (job) =>
+          !["LIGAND_PREPARATION", "RECEPTOR_PREPARATION"].includes(
+            job.kind,
+          ) || job.status === "FAILED",
+      ),
+    [jobs],
+  );
   const columns = useMemo<ColumnDef<Job>[]>(
     () => [
       { accessorKey: "name", header: "Job" },
@@ -2392,6 +2563,36 @@ function JobsBottom({
             {String(getValue())}
           </span>
         ),
+      },
+      {
+        id: "result_visibility",
+        header: "Show results",
+        cell: ({ row }) =>
+          row.original.kind === "DOCKING" ? (
+            <input
+              type="checkbox"
+              className="accent-cyan"
+              checked={Boolean(row.original.result_visible)}
+              disabled={
+                !row.original.result_available ||
+                updatingResultJobId === row.original.id
+              }
+              aria-label={`Show results for ${row.original.name}`}
+              title={
+                row.original.result_available
+                  ? "Show or hide this job in Docking Results"
+                  : "Results are not available yet"
+              }
+              onChange={(event) =>
+                void onSetDockingJobVisibility(
+                  row.original,
+                  event.currentTarget.checked,
+                )
+              }
+            />
+          ) : (
+            <span className="text-slate-600">—</span>
+          ),
       },
       {
         id: "progress",
@@ -2455,7 +2656,7 @@ function JobsBottom({
         ),
       },
     ],
-    [],
+    [act, onSetDockingJobVisibility, updatingResultJobId],
   );
   return (
     <>
@@ -2466,7 +2667,7 @@ function JobsBottom({
           Live via SSE
         </span>
       </div>
-      <DataTable data={jobs} columns={columns} />
+      <DataTable data={visibleJobs} columns={columns} />
     </>
   );
 }
@@ -2542,6 +2743,8 @@ function ResultsBottomEnhanced({
   tools,
   results,
   setResults,
+  resultCache,
+  queryResults,
   selectedKeys,
   setSelectedKeys,
   visibleKeys,
@@ -2549,13 +2752,18 @@ function ResultsBottomEnhanced({
   activePose,
   setActivePose,
   onPoseFocus,
-  refresh,
   onNotice,
 }: {
   project?: Project;
   tools: Record<string, Tool>;
   results: DockingResult[];
   setResults: (x: DockingResult[]) => void;
+  resultCache: Map<string, DockingResult>;
+  queryResults: (
+    page: number,
+    sort: string,
+    direction: "asc" | "desc",
+  ) => Promise<DockingResultPage>;
   selectedKeys: Set<string>;
   setSelectedKeys: (x: Set<string>) => void;
   visibleKeys: Set<string>;
@@ -2563,13 +2771,25 @@ function ResultsBottomEnhanced({
   activePose?: DockingResult;
   setActivePose: (x: DockingResult | undefined) => void;
   onPoseFocus: (row: DockingResult) => void;
-  refresh: () => void;
   onNotice: (text: string) => void;
 }) {
   const [sort, setSort] = useState<{
     key: ResultSortKey;
     direction: "asc" | "desc";
   }>({ key: "rank", direction: "asc" });
+  const [page, setPage] = useState(1);
+  const [pageData, setPageData] = useState<DockingResultPage>({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 100,
+    pages: 1,
+    sort_key: "rank",
+    direction: "asc",
+    score_columns: [],
+  });
+  const [resultLoading, setResultLoading] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [summaryMessage, setSummaryMessage] = useState("");
   const [summaryCatalog, setSummaryCatalog] =
     useState<DockingSummaryCatalog>();
@@ -2577,37 +2797,38 @@ function ResultsBottomEnhanced({
   const [summaryPickerLoading, setSummaryPickerLoading] = useState(false);
   const [loadingSummaryId, setLoadingSummaryId] = useState<string>();
   const summaryInput = useRef<HTMLInputElement>(null);
-  const scoreColumns = Array.from(
-    new Set(results.flatMap((row) => Object.keys(row.scores || {}))),
-  )
-    .filter((key) => key !== "affinity")
-    .sort();
-  const sortedResults = [...results].sort((left, right) => {
-    const key = sort.key;
-    const value = (row: DockingResult): number | string | null => {
-      if (key === "rank") return row.rank;
-      if (key === "receptor_name") return row.receptor_name;
-      if (key === "ligand_name") return row.ligand_name;
-      if (key === "pose") return row.pose;
-      if (key === "affinity") return row.affinity;
-      if (key === "engine") return row.engine;
-      if (key === "job_name") return row.job_name;
-      return row.scores?.[key.slice(6)] ?? null;
+  const onNoticeRef = useRef(onNotice);
+  onNoticeRef.current = onNotice;
+  const scoreColumns = pageData.score_columns;
+  const sortedResults = results;
+  useEffect(() => {
+    setPage(1);
+    setSort({ key: "rank", direction: "asc" });
+  }, [project?.id]);
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    setResultLoading(true);
+    queryResults(page, sort.key, sort.direction)
+      .then((next) => {
+        if (cancelled) return;
+        setPageData(next);
+        setResults(next.items);
+        if (page > next.pages) setPage(next.pages);
+      })
+      .catch((error) => {
+        if (!cancelled)
+          onNoticeRef.current(
+            error instanceof Error ? error.message : String(error),
+          );
+      })
+      .finally(() => {
+        if (!cancelled) setResultLoading(false);
+      });
+    return () => {
+      cancelled = true;
     };
-    const a = value(left),
-      b = value(right);
-    if (a === b) return 0;
-    if (a === null || a === undefined || a === "") return 1;
-    if (b === null || b === undefined || b === "") return -1;
-    const comparison =
-      typeof a === "number" && typeof b === "number"
-        ? a - b
-        : String(a).localeCompare(String(b), undefined, {
-            numeric: true,
-            sensitivity: "base",
-          });
-    return sort.direction === "asc" ? comparison : -comparison;
-  });
+  }, [project?.id, page, queryResults, reloadNonce, setResults, sort]);
   const selectedResultCount = results.reduce(
     (count, row) => count + Number(selectedKeys.has(row.key)),
     0,
@@ -2618,12 +2839,17 @@ function ResultsBottomEnhanced({
     selectedResultCount > 0 && !allResultsSelected;
   const ordered = sortedResults.filter((row) => selectedKeys.has(row.key));
   const navigation = ordered.length ? ordered : sortedResults;
-  const setSortKey = (key: ResultSortKey) =>
+  const selectedRows = [...selectedKeys]
+    .map((key) => resultCache.get(key))
+    .filter((row): row is DockingResult => Boolean(row));
+  const setSortKey = (key: ResultSortKey) => {
+    setPage(1);
     setSort((current) =>
       current.key === key
         ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
         : { key, direction: "asc" },
     );
+  };
   const indicator = (key: ResultSortKey) =>
     sort.key === key ? (sort.direction === "asc" ? " ↑" : " ↓") : "";
   const moveKeyboard = (delta: number) => {
@@ -2650,21 +2876,47 @@ function ResultsBottomEnhanced({
     next.has(row.key) ? next.delete(row.key) : next.add(row.key);
     setSelectedKeys(next);
   };
-  const toggleAll = () =>
-    setSelectedKeys(
-      allResultsSelected
-        ? new Set()
-        : new Set(results.map((row) => row.key)),
+  const toggleAll = () => {
+    const next = new Set(selectedKeys);
+    results.forEach((row) =>
+      allResultsSelected ? next.delete(row.key) : next.add(row.key),
     );
+    setSelectedKeys(next);
+  };
   const toggleVisible = (row: DockingResult) => {
     const next = new Set(visibleKeys);
     next.has(row.key) ? next.delete(row.key) : next.add(row.key);
     setVisibleKeys(next);
   };
   const focusRow = (row: DockingResult) => onPoseFocus(row);
+  const copySmiles = async (row: DockingResult) => {
+    const smiles = row.smiles?.trim();
+    if (!smiles) {
+      onNotice(`No SMILES is available for ${row.ligand_name}.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(smiles);
+      onNotice(`Copied SMILES for ${row.ligand_name}.`);
+    } catch {
+      const input = document.createElement("textarea");
+      input.value = smiles;
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand("copy");
+      input.remove();
+      onNotice(
+        copied
+          ? `Copied SMILES for ${row.ligand_name}.`
+          : `Could not copy SMILES for ${row.ligand_name}.`,
+      );
+    }
+  };
   const exportPse = async () => {
     if (!project || !selectedKeys.size) return;
-    const poses = results.filter((row) => selectedKeys.has(row.key));
+    const poses = selectedRows;
     const proteinId = poses[0]?.protein_id;
     if (!proteinId) return;
     try {
@@ -2686,8 +2938,7 @@ function ResultsBottomEnhanced({
   };
   const exportCsv = async () => {
     if (!project || !selectedKeys.size) return;
-    const poses = results
-      .filter((row) => selectedKeys.has(row.key))
+    const poses = selectedRows
       .map((row) => ({
         job_id: row.job_id,
         ligand_code: row.ligand_code,
@@ -2707,8 +2958,7 @@ function ResultsBottomEnhanced({
   };
   const exportSdf = async () => {
     if (!project || !selectedKeys.size) return;
-    const poses = results
-      .filter((row) => selectedKeys.has(row.key))
+    const poses = selectedRows
       .map((row) => ({
         job_id: row.job_id,
         ligand_code: row.ligand_code,
@@ -2728,9 +2978,8 @@ function ResultsBottomEnhanced({
   };
   const deleteSelectedLigands = async () => {
     if (!project || !selectedKeys.size) return;
-    const selected = results.filter((row) => selectedKeys.has(row.key));
     const unique = new Map(
-      selected.map((row) => [
+      selectedRows.map((row) => [
         `${row.job_id}:${row.ligand_code}`,
         { job_id: row.job_id, ligand_code: row.ligand_code },
       ]),
@@ -2745,19 +2994,17 @@ function ResultsBottomEnhanced({
     try {
       await api.deleteDockingResultLigands(project.id, [...unique.values()]);
       const removed = new Set(unique.keys());
-      const remaining = results.filter(
-        (row) => !removed.has(`${row.job_id}:${row.ligand_code}`),
-      );
       setSelectedKeys(new Set());
       setVisibleKeys(
         new Set(
-          [...visibleKeys].filter((key) =>
-            remaining.some((row) => row.key === key),
-          ),
+          [...visibleKeys].filter((key) => {
+            const row = resultCache.get(key);
+            return row && !removed.has(`${row.job_id}:${row.ligand_code}`);
+          }),
         ),
       );
       setActivePose(undefined);
-      refresh();
+      setReloadNonce((current) => current + 1);
     } catch (error) {
       onNotice(error instanceof Error ? error.message : String(error));
     }
@@ -2986,7 +3233,10 @@ function ResultsBottomEnhanced({
               <FolderOpen />
               {summaryPickerLoading ? "Opening…" : "Load summary CSV"}
             </button>
-            <button className="btn-secondary" onClick={refresh}>
+            <button
+              className="btn-secondary"
+              onClick={() => setReloadNonce((current) => current + 1)}
+            >
               <RefreshCw />
               Refresh
             </button>
@@ -2994,12 +3244,18 @@ function ResultsBottomEnhanced({
         </div>
         <div className="empty-panel min-h-36">
           <Database className="mx-auto mb-2 h-7 w-7 text-slate-700" />
-          <div>No completed docking results yet.</div>
-          <div className="mt-1 text-xs text-slate-600">
-            Run docking and refresh after the Job Monitor reports COMPLETED. A
-            summary CSV can update matching result rows after their pose files
-            are available.
+          <div>
+            {resultLoading
+              ? "Loading docking results…"
+              : "No completed docking results yet."}
           </div>
+          {!resultLoading && (
+            <div className="mt-1 text-xs text-slate-600">
+              Run docking and refresh after the Job Monitor reports COMPLETED.
+              A summary CSV can update matching result rows after their pose
+              files are available.
+            </div>
+          )}
         </div>
         {summaryPicker}
       </div>
@@ -3009,7 +3265,7 @@ function ResultsBottomEnhanced({
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[.18em] text-slate-500">
-            Docking results
+            Docking results · {pageData.total.toLocaleString()}
           </div>
           <div className="text-xs text-slate-600">
             Click a row to show its pose; click it again to hide it. Checkboxes
@@ -3046,7 +3302,10 @@ function ResultsBottomEnhanced({
             <Trash2 />
             Delete selected ligands
           </button>
-          <button className="btn-secondary" onClick={refresh}>
+          <button
+            className="btn-secondary"
+            onClick={() => setReloadNonce((current) => current + 1)}
+          >
             <RefreshCw />
             Refresh
           </button>
@@ -3089,14 +3348,14 @@ function ResultsBottomEnhanced({
               <th>
                 <input
                   type="checkbox"
-                  aria-label="Select all docking results"
+                  aria-label="Select all docking results on this page"
                   aria-checked={
                     someResultsSelected ? "mixed" : allResultsSelected
                   }
                   title={
                     allResultsSelected
-                      ? "Clear all docking result selections"
-                      : "Select all docking results"
+                      ? "Clear selections on this page"
+                      : "Select all results on this page"
                   }
                   checked={allResultsSelected}
                   ref={(input) => {
@@ -3233,6 +3492,19 @@ function ResultsBottomEnhanced({
                     >
                       <Focus />
                     </button>
+                    <button
+                      type="button"
+                      className="icon-btn h-7 w-7"
+                      aria-label={`Copy SMILES for ${row.ligand_name}`}
+                      title="Copy ligand SMILES"
+                      disabled={!row.smiles?.trim()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void copySmiles(row);
+                      }}
+                    >
+                      <Pencil />
+                    </button>
                   </div>
                 </td>
                 <td className="font-mono">{row.rank}</td>
@@ -3259,9 +3531,40 @@ function ResultsBottomEnhanced({
           </tbody>
         </table>
       </div>
+      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-slate-500">
+        <span>
+          {pageData.total
+            ? `${(pageData.page - 1) * pageData.page_size + 1}–${Math.min(pageData.page * pageData.page_size, pageData.total)} of ${pageData.total.toLocaleString()}`
+            : "0 results"}
+          {resultLoading ? " · Loading…" : ""}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={resultLoading || pageData.page <= 1}
+            onClick={() => setPage((current) => Math.max(1, current - 1))}
+          >
+            Previous
+          </button>
+          <span className="min-w-24 text-center font-mono">
+            Page {pageData.page} / {pageData.pages}
+          </span>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={resultLoading || pageData.page >= pageData.pages}
+            onClick={() =>
+              setPage((current) => Math.min(pageData.pages, current + 1))
+            }
+          >
+            Next
+          </button>
+        </div>
+      </div>
       <div className="mt-2 text-[10px] text-slate-600">
-        列見出しクリックでソート。チェックボックスは削除・CSV/SDF/PSE出力用の選択、目のボタンはViewerへの固定表示、フォーカスボタンはposeと周辺5
-        Åへのフォーカスです。行のactive状態や↑/↓移動ではチェック状態を変更しません。Load
+        100件ずつ表示し、列見出しクリック時は全結果をサーバー側でソートします。チェックボックスは削除・CSV/SDF/PSE出力用の選択、目のボタンはViewerへの固定表示、フォーカスボタンはposeと周辺5
+        Åへのフォーカス、ペンボタンはSMILESのコピーです。行のactive状態や↑/↓移動ではチェック状態を変更しません。Load
         summary
         CSVは現在のposeファイルに一致するスコア行だけを読み込み、元CSVとSDFは変更しません。
       </div>

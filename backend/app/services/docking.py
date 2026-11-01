@@ -13,6 +13,7 @@ class DockingInput:
     center: dict
     size: dict
     parameters: dict
+    autobox_ligand: Path | None = None
 
 
 class DockingAdapter(ABC):
@@ -24,16 +25,24 @@ class DockingAdapter(ABC):
     def common_args(self, item: DockingInput) -> list[str]:
         args = [
             self.executable, "--receptor", str(item.receptor), "--ligand", str(item.ligand),
-            "--out", str(item.output), "--center_x", str(item.center["x"]),
-            "--center_y", str(item.center["y"]), "--center_z", str(item.center["z"]),
-            "--size_x", str(item.size["x"]), "--size_y", str(item.size["y"]),
-            "--size_z", str(item.size["z"]),
+            "--out", str(item.output),
         ]
+        if item.autobox_ligand is not None:
+            args.extend(["--autobox_ligand", str(item.autobox_ligand)])
+        else:
+            args.extend([
+                "--center_x", str(item.center["x"]),
+                "--center_y", str(item.center["y"]), "--center_z", str(item.center["z"]),
+                "--size_x", str(item.size["x"]), "--size_y", str(item.size["y"]),
+                "--size_z", str(item.size["z"]),
+            ])
         mapping = {"exhaustiveness": "--exhaustiveness", "num_modes": "--num_modes", "cpu": "--cpu", "seed": "--seed", "min_rmsd_filter": "--min_rmsd_filter"}
         for key, flag in mapping.items():
             value = item.parameters.get(key)
             if value is not None:
                 args.extend([flag, str(value)])
+        if item.parameters.get("local_only"):
+            args.append("--local_only")
         return args
 
 

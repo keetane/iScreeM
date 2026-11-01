@@ -540,6 +540,92 @@ def receptor_atom_coordinates(path: Path) -> list[list[float]]:
     return coordinates
 
 
+def write_autobox_ligand(
+    source: Path,
+    destination: Path,
+    *,
+    name: str,
+    chain: str,
+    residue_number: str,
+) -> list[list[float]]:
+    """Extract one organic HETATM residue for smina/gnina autoboxing."""
+    is_cif = source.suffix.lower() in {".cif", ".mmcif"}
+    wanted_name = name.strip().upper()
+    wanted_chain = (chain.strip() or "_").upper()
+    wanted_number = residue_number.strip().upper()
+    if is_cif:
+        try:
+            import gemmi
+        except ImportError as exc:
+            raise ValueError("CIF/mmCIF autoboxing requires the gemmi package") from exc
+        try:
+            structure = gemmi.read_structure(str(source))
+        except (RuntimeError, ValueError) as exc:
+            raise ValueError(f"Could not convert CIF/mmCIF autobox ligand: {exc}") from exc
+        # mmCIF distinguishes label_asym_id (Gemmi residue.subchain) from
+        # auth_asym_id (Gemmi chain.name).  The UI can contain either ID, while
+        # PDB conversion necessarily writes the author chain ID. Resolve the
+        # selected residue before converting so an ID such as label chain D /
+        # author chain A is not lost during conversion.
+        resolved: tuple[str, str, str] | None = None
+        for model in structure:
+            for structure_chain in model:
+                author_chain = (structure_chain.name.strip() or "_").upper()
+                for residue in structure_chain:
+                    label_chain = (residue.subchain.strip() or "_").upper()
+                    if (
+                        residue.name.strip().upper() == wanted_name
+                        and str(residue.seqid.num).strip().upper() == wanted_number
+                        and wanted_chain in {author_chain, label_chain}
+                    ):
+                        resolved = (wanted_name, author_chain, wanted_number)
+                        break
+                if resolved:
+                    break
+            if resolved:
+                break
+        if resolved is None:
+            raise ValueError(
+                f"Autobox ligand was not found in the original structure: "
+                f"{name} {chain}:{residue_number}"
+            )
+        wanted_name, wanted_chain, wanted_number = resolved
+        lines = structure.make_pdb_string().splitlines(keepends=True)
+    else:
+        lines = source.read_text(errors="replace").splitlines(keepends=True)
+
+    selected: list[str] = []
+    coordinates: list[list[float]] = []
+    for line in lines:
+        if line[:6].strip().upper() != "HETATM":
+            continue
+        line_name = line[17:20].strip().upper()
+        line_chain = (line[21:22].strip() or "_").upper()
+        # parse_structure reports CIF residue numbers without insertion codes.
+        line_number = line[22:26].strip() if is_cif else line[22:27].strip()
+        if (line_name, line_chain, line_number.upper()) != (
+            wanted_name,
+            wanted_chain,
+            wanted_number,
+        ):
+            continue
+        try:
+            coordinates.append(
+                [float(line[30:38]), float(line[38:46]), float(line[46:54])]
+            )
+        except ValueError:
+            continue
+        selected.append(line)
+    if not selected:
+        raise ValueError(
+            f"Autobox ligand was not found in the original structure: "
+            f"{name} {chain}:{residue_number}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("".join([*selected, "END\n"]))
+    return coordinates
+
+
 def residue_coordinates(path: Path, residues: list[str]) -> list[list[float]]:
     wanted = {r.replace("_", "").replace(" ", "").upper() for r in residues}
     coords = []

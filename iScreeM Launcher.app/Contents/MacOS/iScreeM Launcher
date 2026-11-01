@@ -2,7 +2,19 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-LOG="$ROOT/.iscreem-launcher.log"
+
+# A shell-script app launched by Finder does not inherit permission to read
+# project files under Documents. Hand the supervisor to Terminal, which is the
+# user-approved shell host, while keeping Terminal itself in the background.
+if [[ "${1:-}" != "--terminal-supervisor" ]]; then
+  /usr/bin/open -gj -a Terminal "$ROOT/start-iScreeM.command"
+  exit $?
+fi
+
+LOG_DIR="$HOME/Library/Logs/iScreeM"
+mkdir -p "$LOG_DIR"
+LOG="$LOG_DIR/launcher.log"
+PID_FILE="$LOG_DIR/supervisor.pid"
 TOOLS="$ROOT/tools"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/miniforge3/bin:$HOME/miniconda3/bin:$TOOLS/smina:$TOOLS/p2rank:$TOOLS/gnina:$TOOLS/redis:$PATH"
@@ -17,14 +29,27 @@ fi
 
 CONDA="${MDS_CONDA_EXECUTABLE:-$(command -v conda 2>/dev/null || true)}"
 NPM="${MDS_NPM_EXECUTABLE:-$(command -v npm 2>/dev/null || true)}"
+NODE="${MDS_NODE_EXECUTABLE:-$(command -v node 2>/dev/null || true)}"
 
 cd "$ROOT"
 touch "$LOG"
+print "\n[$(date '+%Y-%m-%d %H:%M:%S')] Starting iScreeM launcher" >>"$LOG"
 
-if [[ -z "$CONDA" || -z "$NPM" ]]; then
-  print "iScreeM requires conda and npm in PATH (conda='$CONDA', npm='$NPM')." >>"$LOG"
+if [[ -f "$PID_FILE" ]]; then
+  RUNNING_PID="$(<"$PID_FILE")"
+  if [[ "$RUNNING_PID" == <-> ]] && kill -0 "$RUNNING_PID" >/dev/null 2>&1; then
+    open http://127.0.0.1:5175/
+    exit 0
+  fi
+fi
+print "$$" >| "$PID_FILE"
+
+if [[ -z "$CONDA" || -z "$NPM" || -z "$NODE" ]]; then
+  print "iScreeM requires conda, node, and npm in PATH (conda='$CONDA', node='$NODE', npm='$NPM')." >>"$LOG"
   exit 1
 fi
+print "Runtime: conda='$CONDA', node='$NODE', npm='$NPM'" >>"$LOG"
+print "Launcher architecture: $(/usr/bin/arch)" >>"$LOG"
 
 REDIS_CLI="$TOOLS/redis/redis-cli"
 REDIS_SERVER="$TOOLS/redis/redis-server"
@@ -32,24 +57,91 @@ if [[ -x "$REDIS_CLI" && -x "$REDIS_SERVER" ]] && ! "$REDIS_CLI" ping >/dev/null
   "$REDIS_SERVER" --daemonize yes --dir "$ROOT/data" --logfile "$ROOT/.redis.log" >>"$LOG" 2>&1
 fi
 
-if ! pgrep -f 'uvicorn app.main:app.*--port 8001' >/dev/null 2>&1; then
-  (cd "$ROOT" && nohup "$CONDA" run -n iScreeM env PYTHONPATH=backend uvicorn app.main:app --app-dir backend --port 8001 </dev/null >>"$LOG" 2>&1) &!
-fi
+API_PID=""
+WORKER_PID=""
+FRONTEND_PID=""
 
-if ! pgrep -f 'rq worker docking default.*redis://localhost:6379/0' >/dev/null 2>&1; then
-  (cd "$ROOT" && nohup "$CONDA" run -n iScreeM rq worker docking default --worker-class rq.worker.SimpleWorker --url redis://localhost:6379/0 --path backend </dev/null >>"$LOG" 2>&1) &!
-fi
+start_api() {
+  if [[ -n "$API_PID" ]] && kill -0 "$API_PID" >/dev/null 2>&1; then
+    return
+  fi
+  if curl -fsS http://127.0.0.1:8001/api/projects >/dev/null 2>&1; then
+    return
+  fi
+  print "[$(date '+%Y-%m-%d %H:%M:%S')] Starting API" >>"$LOG"
+  (cd "$ROOT" && exec "$CONDA" run -n iScreeM env PYTHONPATH=backend \
+    uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8001) \
+    </dev/null >>"$LOG" 2>&1 &
+  API_PID=$!
+}
 
-if ! pgrep -f 'vite.*--port 5175' >/dev/null 2>&1; then
-  (cd "$ROOT/frontend" && nohup env MDS_API_URL=http://127.0.0.1:8001 "$NPM" run dev -- --host 127.0.0.1 --port 5175 </dev/null >>"$LOG" 2>&1) &!
-fi
+start_worker() {
+  if pgrep -f 'rq worker docking default.*redis://localhost:6379/0' >/dev/null 2>&1; then
+    return
+  fi
+  if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" >/dev/null 2>&1; then
+    return
+  fi
+  print "[$(date '+%Y-%m-%d %H:%M:%S')] Starting worker" >>"$LOG"
+  (cd "$ROOT" && exec "$CONDA" run -n iScreeM rq worker docking default \
+    --worker-class rq.worker.SimpleWorker --url redis://localhost:6379/0 \
+    --path backend) </dev/null >>"$LOG" 2>&1 &
+  WORKER_PID=$!
+}
+
+start_frontend() {
+  if [[ -n "$FRONTEND_PID" ]] && kill -0 "$FRONTEND_PID" >/dev/null 2>&1; then
+    return
+  fi
+  if curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1; then
+    return
+  fi
+  print "[$(date '+%Y-%m-%d %H:%M:%S')] Starting frontend" >>"$LOG"
+  (cd "$ROOT/frontend" && exec /usr/bin/env MDS_API_URL=http://127.0.0.1:8001 \
+    /usr/bin/arch -arm64 "$NODE" "$ROOT/frontend/node_modules/vite/bin/vite.js" \
+    --host 127.0.0.1 --port 5175 --strictPort) \
+    </dev/null >>"$LOG" 2>&1 &
+  FRONTEND_PID=$!
+}
+
+cleanup() {
+  for pid in "$API_PID" "$WORKER_PID" "$FRONTEND_PID"; do
+    [[ -n "$pid" ]] && kill "$pid" >/dev/null 2>&1 || true
+  done
+  if [[ -f "$PID_FILE" && "$(<"$PID_FILE")" == "$$" ]]; then
+    rm -f "$PID_FILE"
+  fi
+}
+shutdown() {
+  trap - EXIT INT TERM HUP
+  cleanup
+  exit 0
+}
+trap cleanup EXIT
+trap shutdown INT TERM HUP
+
+start_api
+start_worker
+start_frontend
 
 for _ in {1..30}; do
-  if curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1 && \
+     curl -fsS http://127.0.0.1:8001/api/projects >/dev/null 2>&1; then
     open http://127.0.0.1:5175/
-    exit 0
+    break
   fi
   sleep 1
 done
 
-open http://127.0.0.1:5175/
+if ! curl -fsS http://127.0.0.1:5175/ >/dev/null 2>&1 || \
+   ! curl -fsS http://127.0.0.1:8001/api/projects >/dev/null 2>&1; then
+  print "[$(date '+%Y-%m-%d %H:%M:%S')] Timed out waiting for iScreeM services" >>"$LOG"
+  exit 1
+fi
+
+while true; do
+  start_api
+  start_worker
+  start_frontend
+  sleep 5
+done

@@ -322,12 +322,19 @@ export function Viewer({
           event?: MouseEvent,
         ) => {
           atomClickRef.current = true;
+          const isWater = interactionWaterResidues.has(
+            String(atom.resn || "").toUpperCase(),
+          );
           if (
             (event?.ctrlKey || ctrlLeftClickRef.current) &&
             atom?.resi !== undefined &&
-            !interactionWaterResidues.has(String(atom.resn || "").toUpperCase())
-          )
+            !isWater
+          ) {
             centerAtomResidue(atom);
+            return;
+          }
+          if (isWater && atom?.resi !== undefined)
+            onSelectResidueRef.current(`${atom.chain || "_"}:${atom.resi}`);
         };
         model.current.setClickable(
           { hetflag: false },

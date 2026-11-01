@@ -20,6 +20,7 @@ from .schemas import (
     CsvExportRequest,
     DockingRequest,
     DockingResultDeleteRequest,
+    DockingResultJobVisibilityRequest,
     GridCreate,
     GridPatch,
     LigandDeleteRequest,
@@ -34,7 +35,14 @@ from .schemas import (
     SmilesLigand,
 )
 from .services.commands import all_tools
-from .services.docking_csv import select_docking_results
+from .services.docking_result_pages import (
+    index_job_csv,
+    open_results_index,
+    query_result_page,
+    query_selected_results,
+    sync_hidden_jobs,
+    sync_hidden_ligands,
+)
 from .services.docking_uploads import load_docking_upload, prepare_docking_upload
 from .services.export_names import export_filename
 from .services.grids import grid_from_coordinates
@@ -63,6 +71,7 @@ from .services.storage_names import (
     readable_name,
     unique_database_id,
     unique_directory_name,
+    unique_docking_job_id,
 )
 
 settings.prepare()
@@ -799,6 +808,8 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
     grid = db.get(DockingGrid, body.grid_id) if body.grid_id else None
     if body.grid_id and (not grid or grid.project_id != project_id):
         raise HTTPException(404, "Grid not found")
+    if grid and body.autobox_ligand:
+        raise HTTPException(422, "Select either a grid or an autobox ligand, not both")
     if grid and grid.pocket_id:
         pocket = db.get(Pocket, grid.pocket_id)
         if not pocket or pocket.protein_id != protein.id:
@@ -813,6 +824,26 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
     if receptor_source is None:
         raise HTTPException(422, "Receptor structure file is missing")
     _, receptor_preparation = receptor_source
+    if body.autobox_ligand:
+        selector = body.autobox_ligand.model_dump()
+        available_ligands = {
+            (
+                str(item.get("name") or "").upper(),
+                str(item.get("chain") or "_").upper(),
+                str(item.get("residue_number") or "").upper(),
+            )
+            for item in (protein.stats or {}).get("hetero_molecules", [])
+        }
+        requested = (
+            selector["name"].upper(),
+            (selector["chain"] or "_").upper(),
+            selector["residue_number"].upper(),
+        )
+        if requested not in available_ligands:
+            raise HTTPException(422, "Selected autobox ligand was not found in the receptor")
+        original = resolve_data_path(protein.original_path)
+        if original is None or not original.is_file():
+            raise HTTPException(422, "Original receptor structure is missing")
     if not body.ligand_ids and not body.upload_ids:
         raise HTTPException(422, "Select library ligands or upload a docking ligand file")
     ligands = (
@@ -839,21 +870,36 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
         unknown_h2o = sorted(set(selected_h2o) - available_h2o)
         if unknown_h2o:
             raise HTTPException(422, f"Selected water molecule was not found: {unknown_h2o[0]}")
-    uploaded_ligands: list[dict] = []
+    docking_uploads: list[dict] = []
+    uploaded_count = 0
     project_root = (settings.data_dir / "projects" / project_id).resolve()
     try:
         for upload_id in dict.fromkeys(body.upload_ids):
-            uploaded_ligands.extend(load_docking_upload(project_root, upload_id).get("ligands", []))
+            upload = load_docking_upload(project_root, upload_id)
+            ligand_count = int(upload.get("ligand_count") or len(upload.get("ligands", [])))
+            uploaded_count += ligand_count
+            docking_uploads.append(
+                {
+                    "upload_id": upload.get("upload_id", upload_id),
+                    "original_name": upload.get("original_name", upload_id),
+                    "ligand_count": ligand_count,
+                }
+            )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(422, str(exc)) from exc
+    comment = body.comment.strip()
     snapshot = body.model_dump(exclude_none=True)
+    snapshot["comment"] = comment
     snapshot["selected_h2o"] = selected_h2o
-    snapshot["search_mode"] = "grid" if grid else "global_without_grid"
+    snapshot["search_mode"] = (
+        "grid" if grid else "autobox_ligand" if body.autobox_ligand else "global_without_grid"
+    )
     snapshot["receptor_preparation"] = receptor_preparation
-    snapshot["uploaded_ligands"] = uploaded_ligands
+    snapshot["docking_uploads"] = docking_uploads
     snapshot["auto_prepare_unprepared_ligands"] = True
+    snapshot["deferred_upload_preparation"] = True
     item = DockingJob(
-        id=unique_database_id(db, DockingJob, body.name),
+        id=unique_docking_job_id(db, DockingJob, body.name, comment=comment),
         project_id=project_id,
         name=body.name,
         kind="DOCKING",
@@ -862,7 +908,7 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
         status=JobStatus.QUEUED,
         parameters=snapshot,
         ligand_ids=body.ligand_ids,
-        total_count=len(body.ligand_ids) + len(uploaded_ligands),
+        total_count=len(body.ligand_ids) + uploaded_count,
     )
     db.add(item)
     db.commit()
@@ -899,7 +945,12 @@ async def upload_docking_ligands(
                 if size > settings.max_upload_mb * 1024 * 1024:
                     raise HTTPException(413, "Upload too large")
                 output.write(chunk)
-        return prepare_docking_upload(source, root, file.filename or source.name)
+        manifest = prepare_docking_upload(source, root, file.filename or source.name)
+        return {
+            "upload_id": manifest["upload_id"],
+            "original_name": manifest["original_name"],
+            "ligand_count": manifest["ligand_count"],
+        }
     except HTTPException:
         shutil.rmtree(root, ignore_errors=True)
         raise
@@ -910,9 +961,27 @@ async def upload_docking_ligands(
 
 @app.get("/api/jobs")
 def jobs(db: Session = Depends(get_db)):
-    return [
-        serialize(x) for x in db.scalars(select(DockingJob).order_by(DockingJob.created_at.desc()))
-    ]
+    return _serialize_jobs(
+        list(db.scalars(select(DockingJob).order_by(DockingJob.created_at.desc())))
+    )
+
+
+def _serialize_jobs(items: list[DockingJob]) -> list[dict]:
+    hidden_by_project: dict[str, set[str]] = {}
+    payload = []
+    for item in items:
+        values = serialize(item)
+        if item.kind == "DOCKING":
+            if item.project_id not in hidden_by_project:
+                hidden_by_project[item.project_id] = _hidden_result_jobs(
+                    item.project_id
+                )
+            hidden = hidden_by_project[item.project_id]
+            available = (_docking_root(item.project_id, item.id) / "scores.csv").is_file()
+            values["result_available"] = available
+            values["result_visible"] = available and item.id not in hidden
+        payload.append(values)
+    return payload
 
 
 def _docking_root(project_id: str, job_id: str) -> Path:
@@ -960,8 +1029,125 @@ def _hidden_result_ligands(project_id: str) -> set[str]:
     return {str(value) for value in values}
 
 
+def _write_hidden_result_ligands(project_id: str, hidden: set[str]) -> None:
+    path = (
+        settings.data_dir / "projects" / project_id / "docking" / "hidden_ligands.json"
+    ).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(hidden), indent=2))
+
+
+def _hidden_result_jobs(project_id: str) -> set[str]:
+    path = (
+        settings.data_dir / "projects" / project_id / "docking" / "hidden_jobs.json"
+    ).resolve()
+    try:
+        values = json.loads(path.read_text()) if path.is_file() else []
+    except (OSError, ValueError):
+        values = []
+    return {str(value) for value in values}
+
+
+def _write_hidden_result_jobs(project_id: str, hidden: set[str]) -> None:
+    path = (
+        settings.data_dir / "projects" / project_id / "docking" / "hidden_jobs.json"
+    ).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(hidden), indent=2))
+
+
+def _open_synced_docking_results_index(project_id: str, db: Session):
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    project_root = (settings.data_dir / "projects" / project_id).resolve()
+    index_path = project_root / "docking" / "results.sqlite"
+    project_ligands = list(
+        db.scalars(select(Ligand).where(Ligand.project_id == project_id))
+    )
+    ligand_names = {item.id: item.name for item in project_ligands}
+    ligand_smiles = {item.id: item.smiles for item in project_ligands}
+    proteins = {
+        item.id: item
+        for item in db.scalars(select(Protein).where(Protein.project_id == project_id))
+    }
+    connection = open_results_index(index_path)
+    try:
+        jobs = db.scalars(
+            select(DockingJob)
+            .where(DockingJob.project_id == project_id, DockingJob.kind == "DOCKING")
+            .order_by(DockingJob.created_at.desc())
+        )
+        for job in jobs:
+            root = _docking_root(project_id, job.id)
+            csv_path = root / "scores.csv"
+            if not csv_path.is_file():
+                continue
+            protein_id = (job.parameters or {}).get("protein_id")
+            receptor = proteins.get(protein_id)
+            index_job_csv(
+                connection,
+                job={
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "engine": job.engine,
+                    "created_at": job.created_at.isoformat(),
+                    "protein_id": protein_id,
+                    "receptor_name": receptor.name
+                    if receptor
+                    else (protein_id or "Unknown receptor"),
+                },
+                csv_path=csv_path,
+                job_root=root,
+                ligand_names=ligand_names,
+                ligand_smiles=ligand_smiles,
+            )
+        sync_hidden_ligands(connection, _hidden_result_ligands(project_id))
+        sync_hidden_jobs(connection, _hidden_result_jobs(project_id))
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def _selected_docking_results(
+    project_id: str,
+    selections: list[tuple[str, str, int]],
+    db: Session,
+) -> list[dict]:
+    connection = _open_synced_docking_results_index(project_id, db)
+    try:
+        return query_selected_results(connection, selections)
+    finally:
+        connection.close()
+
+
 @app.get("/api/projects/{project_id}/docking-results")
-def docking_results(project_id: str, db: Session = Depends(get_db)):
+def docking_results(
+    project_id: str,
+    page: int = Query(default=1, ge=1),
+    sort: str = Query(default="rank", max_length=100),
+    direction: str = Query(default="asc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
+    connection = _open_synced_docking_results_index(project_id, db)
+    try:
+        result = query_result_page(
+            connection,
+            page=page,
+            sort_key=sort,
+            direction=direction,
+        )
+        for item in result["items"]:
+            item["pose_url"] = (
+                f"/api/projects/{project_id}/docking-results/"
+                f"{item['job_id']}/{item['ligand_code']}/poses?pose={item['pose']}"
+            )
+        return result
+    finally:
+        connection.close()
+
+
+def _legacy_docking_results(project_id: str, db: Session = Depends(get_db)):
     if not db.get(Project, project_id):
         raise HTTPException(404, "Project not found")
     ligands = {
@@ -1071,7 +1257,8 @@ def docking_results(project_id: str, db: Session = Depends(get_db)):
                         else (protein_id or "Unknown receptor"),
                         "ligand_id": item.get("ligand_id") or (ligand.id if ligand else None),
                         "ligand_code": ligand_code,
-                        "ligand_name": ligand.name if ligand else uploaded.get("name", ligand_code),
+                        "ligand_name": item.get("ligand_name")
+                        or (ligand.name if ligand else uploaded.get("name", ligand_code)),
                         "smiles": item.get("smiles")
                         or (ligand.smiles if ligand else uploaded.get("smiles", "")),
                         "pose": pose_number,
@@ -1091,6 +1278,65 @@ def docking_results(project_id: str, db: Session = Depends(get_db)):
     for rank, item in enumerate(rows, start=1):
         item["rank"] = rank
     return rows
+
+
+@app.get("/api/projects/{project_id}/docking-results/jobs")
+def docking_result_jobs(project_id: str, db: Session = Depends(get_db)):
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+    hidden = _hidden_result_jobs(project_id)
+    result = []
+    for job in db.scalars(
+        select(DockingJob)
+        .where(DockingJob.project_id == project_id, DockingJob.kind == "DOCKING")
+        .order_by(DockingJob.created_at.desc())
+    ):
+        if not (_docking_root(project_id, job.id) / "scores.csv").is_file():
+            continue
+        result.append(
+            {
+                "id": job.id,
+                "name": job.name,
+                "status": job.status,
+                "created_at": job.created_at,
+                "comment": (job.parameters or {}).get("comment", ""),
+                "visible": job.id not in hidden,
+            }
+        )
+    return {"jobs": result}
+
+
+@app.put("/api/projects/{project_id}/docking-results/jobs/{job_id}")
+def set_docking_result_job_visibility(
+    project_id: str,
+    job_id: str,
+    body: DockingResultJobVisibilityRequest,
+    db: Session = Depends(get_db),
+):
+    job = db.get(DockingJob, job_id)
+    if not job or job.project_id != project_id or job.kind != "DOCKING":
+        raise HTTPException(404, "Docking job not found")
+    if not (_docking_root(project_id, job.id) / "scores.csv").is_file():
+        raise HTTPException(409, "Docking results are not available yet")
+    hidden = _hidden_result_jobs(project_id)
+    restored_ligands = 0
+    if body.visible:
+        hidden.discard(job.id)
+        hidden_ligands = _hidden_result_ligands(project_id)
+        retained_ligands = {
+            value for value in hidden_ligands if value.split(":", 1)[0] != job.id
+        }
+        restored_ligands = len(hidden_ligands) - len(retained_ligands)
+        _write_hidden_result_ligands(project_id, retained_ligands)
+    else:
+        hidden.add(job.id)
+    _write_hidden_result_jobs(project_id, hidden)
+    return {
+        "job_id": job.id,
+        "visible": body.visible,
+        "restored_ligands": restored_ligands,
+        "artifacts_deleted": False,
+    }
 
 
 @app.get("/api/projects/{project_id}/docking-summaries")
@@ -1138,11 +1384,7 @@ def delete_docking_result_ligands(
         _safe_result_file(project_id, selection.job_id, selection.ligand_code, "docked.sdf")
         requested.add(f"{selection.job_id}:{selection.ligand_code}")
     hidden = _hidden_result_ligands(project_id) | requested
-    path = (
-        settings.data_dir / "projects" / project_id / "docking" / "hidden_ligands.json"
-    ).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(sorted(hidden), indent=2))
+    _write_hidden_result_ligands(project_id, hidden)
     return {"deleted_from_view": len(requested), "artifacts_deleted": False}
 
 
@@ -1190,7 +1432,7 @@ def docking_scores_csv(project_id: str, job_id: str, db: Session = Depends(get_d
         smiles = row.get("smiles", "") or (ligand.smiles if ligand else "")
         code = row.get("ligand_code", "")
         uploaded = uploaded_by_code.get(code)
-        row["ligand"] = row.get("ligand", "") or (
+        row["ligand"] = row.get("ligand", "") or row.get("ligand_name", "") or (
             ligand.name if ligand else (uploaded or {}).get("name", code)
         )
         if not smiles and uploaded:
@@ -1236,10 +1478,9 @@ def docking_scores_csv(project_id: str, job_id: str, db: Session = Depends(get_d
 def export_selected_docking_csv(
     project_id: str, body: CsvExportRequest, db: Session = Depends(get_db)
 ):
-    rows = docking_results(project_id, db)
     selections = [(item.job_id, item.ligand_code, item.pose) for item in body.poses]
     try:
-        selected = select_docking_results(rows, selections)
+        selected = _selected_docking_results(project_id, selections, db)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -1293,10 +1534,9 @@ def export_selected_docking_csv(
 def export_selected_docking_sdf(
     project_id: str, body: CsvExportRequest, db: Session = Depends(get_db)
 ):
-    rows = docking_results(project_id, db)
     selections = [(item.job_id, item.ligand_code, item.pose) for item in body.poses]
     try:
-        selected = select_docking_results(rows, selections)
+        selected = _selected_docking_results(project_id, selections, db)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -1438,10 +1678,13 @@ async def job_events(request: Request):
             from .db import SessionLocal
 
             with SessionLocal() as db:
-                payload = [
-                    serialize(x)
-                    for x in db.scalars(select(DockingJob).order_by(DockingJob.created_at.desc()))
-                ]
+                payload = _serialize_jobs(
+                    list(
+                        db.scalars(
+                            select(DockingJob).order_by(DockingJob.created_at.desc())
+                        )
+                    )
+                )
             yield f"data: {json.dumps(payload, default=str)}\n\n"
             await asyncio.sleep(2)
 

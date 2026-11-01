@@ -127,9 +127,36 @@ export const api = {
       { method: "POST", body },
     );
   },
-  dockingResults: (projectId: string) =>
-    request<import("./types").DockingResult[]>(
-      `/api/projects/${projectId}/docking-results`,
+  dockingResults: (
+    projectId: string,
+    options: { page?: number; sort?: string; direction?: "asc" | "desc" } = {},
+  ) => {
+    const query = new URLSearchParams({
+      page: String(options.page || 1),
+      sort: options.sort || "rank",
+      direction: options.direction || "asc",
+    });
+    return request<import("./types").DockingResultPage>(
+      `/api/projects/${projectId}/docking-results?${query}`,
+    );
+  },
+  setDockingResultJobVisibility: (
+    projectId: string,
+    jobId: string,
+    visible: boolean,
+  ) =>
+    request<{
+      job_id: string;
+      visible: boolean;
+      restored_ligands: number;
+      artifacts_deleted: boolean;
+    }>(
+      `/api/projects/${projectId}/docking-results/jobs/${encodeURIComponent(jobId)}`,
+      {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify({ visible }),
+      },
     ),
   dockingSummaries: (projectId: string) =>
     request<import("./types").DockingSummaryCatalog>(

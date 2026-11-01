@@ -74,10 +74,18 @@ class LigandDeleteRequest(BaseModel):
     ligand_ids: list[str] = Field(min_length=1)
 
 
+class AutoboxLigandSelector(BaseModel):
+    name: str = Field(min_length=1, max_length=16)
+    chain: str = Field(default="_", min_length=1, max_length=16)
+    residue_number: str = Field(min_length=1, max_length=32)
+
+
 class DockingRequest(BaseModel):
     name: str = Field(default="Docking run", min_length=1, max_length=160)
+    comment: str = Field(default="", max_length=120)
     protein_id: str
     grid_id: str | None = None
+    autobox_ligand: AutoboxLigandSelector | None = None
     ligand_ids: list[str] = Field(default_factory=list)
     upload_ids: list[str] = Field(default_factory=list)
     with_selected_h2o: bool = False
@@ -88,6 +96,7 @@ class DockingRequest(BaseModel):
     cpu: int | None = Field(default=None, ge=1, le=256)
     seed: int | None = None
     min_rmsd_filter: float | None = Field(default=None, gt=0)
+    local_only: bool = False
     cnn_scoring: Literal["none", "rescore", "refinement", "all"] | None = None
     no_gpu: bool = False
 
@@ -99,6 +108,10 @@ class DockingResultLigand(BaseModel):
 
 class DockingResultDeleteRequest(BaseModel):
     ligands: list[DockingResultLigand] = Field(min_length=1, max_length=5000)
+
+
+class DockingResultJobVisibilityRequest(BaseModel):
+    visible: bool
 
 
 class PoseSelection(BaseModel):

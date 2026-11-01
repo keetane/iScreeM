@@ -3,6 +3,7 @@
 .venv/
 __pycache__/
 .pytest_cache/
+iScreeM Launcher.app/Contents/_CodeSignature/
 work/
 outputs/
 *.pyc

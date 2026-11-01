@@ -1,6 +1,7 @@
 import csv
 import json
 import re
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +12,12 @@ from .db import SessionLocal
 from .models import DockingGrid, DockingJob, JobStatus, Ligand, Pocket, Protein
 from .services.commands import run_command
 from .services.docking import ADAPTERS, DockingInput
+from .services.docking_result_pages import index_job_csv, open_results_index
+from .services.docking_uploads import (
+    iter_docking_upload_ligands,
+    load_docking_upload,
+    materialize_sdf_record,
+)
 from .services.grids import grid_from_coordinates
 from .services.ligand_normalization import (
     normalize_docked_sdf,
@@ -24,6 +31,7 @@ from .services.pdb import (
     receptor_atom_coordinates,
     restore_hetero_connectivity,
     select_docking_receptor_source,
+    write_autobox_ligand,
     write_docking_receptor,
 )
 from .services.pocket_volume import find_p2rank_points, pocket_metrics, read_p2rank_points
@@ -42,6 +50,37 @@ def _absolute_path(value: str | Path) -> Path:
     return path if path.is_absolute() else path.resolve()
 
 
+def _write_streamed_score_csv(
+    score_store: sqlite3.Connection,
+    destination: Path,
+    score_fields: set[str],
+) -> None:
+    ordered_fields = sorted(score_fields)
+    if "affinity" in ordered_fields:
+        ordered_fields.remove("affinity")
+        ordered_fields.insert(0, "affinity")
+    with destination.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "rank",
+                "ligand_code",
+                "ligand_id",
+                "ligand_name",
+                "smiles",
+                "pose",
+                *ordered_fields,
+            ],
+        )
+        writer.writeheader()
+        ordered_rows = score_store.execute(
+            "SELECT row_json FROM poses "
+            "ORDER BY affinity IS NULL, affinity ASC, sequence ASC"
+        )
+        for rank, (row_json,) in enumerate(ordered_rows, start=1):
+            writer.writerow({"rank": rank, **json.loads(row_json)})
+
+
 def prepare_docking_ligand(ligand: dict, prepared_input: Path) -> dict:
     """Normalize an existing library SDF or automatically prepare SMILES."""
     ligand_input = ligand.get("input")
@@ -55,7 +94,9 @@ def prepare_docking_ligand(ligand: dict, prepared_input: Path) -> dict:
             seed=int(ligand["preparation_seed"]),
             force_field=ligand["force_field"],
         )
-        report["preparation_source"] = "ligand_library"
+        report["preparation_source"] = ligand.get(
+            "preparation_source", "ligand_library"
+        )
         return report
 
     from rdkit import Chem
@@ -344,8 +385,22 @@ def run_docking(job_id: str):
             keep_interacting_waters=legacy_interacting_h2o,
             selected_waters=selected_h2o if uses_selected_h2o else None,
         )
+        autobox_ligand_path = None
+        autobox_selector = params.get("autobox_ligand")
         if grid:
             search_center, search_size, search_mode = grid.center, grid.size, "grid"
+        elif autobox_selector:
+            original_source = _absolute_path(protein.original_path)
+            autobox_ligand_path = job_root / "autobox_ligand.pdb"
+            autobox_coordinates = write_autobox_ligand(
+                original_source,
+                autobox_ligand_path,
+                name=autobox_selector["name"],
+                chain=autobox_selector.get("chain") or "_",
+                residue_number=autobox_selector["residue_number"],
+            )
+            search_center, search_size, _ = grid_from_coordinates(autobox_coordinates)
+            search_mode = "autobox_ligand"
         else:
             search_center, search_size, _ = grid_from_coordinates(
                 receptor_atom_coordinates(receptor_input)
@@ -363,6 +418,9 @@ def run_docking(job_id: str):
                 "search_mode": search_mode,
                 "search_center": search_center,
                 "search_size": search_size,
+                "autobox_ligand_file": (
+                    str(autobox_ligand_path) if autobox_ligand_path else None
+                ),
                 "exclude_organic_hetatm": True,
                 "with_selected_h2o": keep_selected_h2o,
                 "selected_h2o": sorted(selected_h2o),
@@ -374,36 +432,69 @@ def run_docking(job_id: str):
             indent=2,
         )
     )
-    aggregate: list[dict] = []
-    tasks = []
-    for ligand_id in job.ligand_ids:
-        ligand = db.get(Ligand, ligand_id)
-        if ligand:
+    project_root = (settings.data_dir / "projects" / job.project_id).resolve()
+    try:
+        upload_manifests = [
+            load_docking_upload(project_root, item["upload_id"])
+            for item in params.get("docking_uploads", [])
+        ]
+    except Exception as exc:
+        _finish(job, JobStatus.FAILED, str(exc))
+        db.commit()
+        db.close()
+        raise
+
+    def docking_tasks():
+        for ligand_id in job.ligand_ids:
+            ligand = db.get(Ligand, ligand_id)
+            if not ligand:
+                continue
             descriptors = ligand.descriptors or {}
-            tasks.append(
-                {
-                    "ligand_code": ligand.ligand_code,
-                    "ligand_id": ligand.id,
-                    "name": ligand.name,
-                    "smiles": ligand.smiles,
-                    "input": ligand.prepared_sdf_path,
-                    "preparation_seed": descriptors.get("seed", 61453),
-                    "force_field": descriptors.get("force_field", "MMFF94s"),
-                }
-            )
-    for ligand in params.get("uploaded_ligands", []):
-        tasks.append(
-            {
+            yield {
+                "ligand_code": ligand.ligand_code,
+                "ligand_id": ligand.id,
+                "name": ligand.name,
+                "smiles": ligand.smiles,
+                "input": ligand.prepared_sdf_path,
+                "preparation_seed": descriptors.get("seed", 61453),
+                "force_field": descriptors.get("force_field", "MMFF94s"),
+            }
+        # Backward compatibility for jobs created with expanded upload entries.
+        for ligand in params.get("uploaded_ligands", []):
+            yield {
                 "ligand_code": ligand["ligand_code"],
                 "ligand_id": "",
                 "name": ligand.get("name", ligand["ligand_code"]),
                 "smiles": ligand.get("smiles", ""),
-                "input": ligand["sdf_path"],
+                "input": ligand.get("sdf_path"),
+                "source_path": ligand.get("source_path"),
+                "source_format": ligand.get("source_format"),
+                "record_offset": ligand.get("record_offset"),
+                "record_length": ligand.get("record_length"),
+                "preparation_source": "uploaded_sdf_at_docking",
                 "preparation_seed": 61453,
                 "force_field": "MMFF94s",
             }
-        )
-    for ligand in tasks:
+        for upload in upload_manifests:
+            for ligand in iter_docking_upload_ligands(upload):
+                yield {
+                    **ligand,
+                    "ligand_id": "",
+                    "input": ligand.get("sdf_path"),
+                    "preparation_source": "uploaded_sdf_at_docking",
+                    "preparation_seed": 61453,
+                    "force_field": "MMFF94s",
+                }
+
+    score_store_path = job_root / "scores.sqlite"
+    score_store_path.unlink(missing_ok=True)
+    score_store = sqlite3.connect(score_store_path)
+    score_store.execute(
+        "CREATE TABLE poses (sequence INTEGER PRIMARY KEY, affinity REAL, row_json TEXT NOT NULL)"
+    )
+    score_fields: set[str] = set()
+    score_sequence = 0
+    for ligand in docking_tasks():
         if job.cancel_requested:
             _finish(job, JobStatus.CANCELLED)
             db.commit()
@@ -411,12 +502,27 @@ def run_docking(job_id: str):
         task_root = job_root / ligand["ligand_code"]
         task_root.mkdir(exist_ok=True)
         try:
+            if ligand.get("source_format") == "sdf":
+                ligand["input"] = str(
+                    materialize_sdf_record(
+                        ligand, task_root / "ligand.uploaded.sdf"
+                    )
+                )
             prepared_input = task_root / "ligand.prepared.sdf"
             preparation_report = prepare_docking_ligand(ligand, prepared_input)
+            ligand["smiles"] = preparation_report.get(
+                "canonical_smiles", ligand.get("smiles", "")
+            )
             output = task_root / "docked.sdf"
             raw_output = task_root / "docked.raw.sdf"
             item = DockingInput(
-                receptor_input, prepared_input, raw_output, search_center, search_size, params
+                receptor_input,
+                prepared_input,
+                raw_output,
+                search_center,
+                search_size,
+                params,
+                autobox_ligand=autobox_ligand_path,
             )
             result = run_command(adapter.build_args(item), task_root)
             (task_root / "docking.stdout.log").write_text(result.stdout)
@@ -443,45 +549,59 @@ def run_docking(job_id: str):
             scores = parse_docking_scores(output_text)
             (task_root / "scores.json").write_text(json.dumps(scores, indent=2))
             for pose_index, score in enumerate(scores, start=1):
-                aggregate.append(
-                    {
-                        "ligand_code": ligand["ligand_code"],
-                        "ligand_id": ligand["ligand_id"],
-                        "smiles": ligand["smiles"],
-                        "pose": pose_index,
-                        **score,
-                    }
+                row = {
+                    "ligand_code": ligand["ligand_code"],
+                    "ligand_id": ligand["ligand_id"],
+                    "ligand_name": ligand["name"],
+                    "smiles": ligand["smiles"],
+                    "pose": pose_index,
+                    **score,
+                }
+                score_fields.update(
+                    key
+                    for key in row
+                    if key
+                    not in {"ligand_code", "ligand_id", "ligand_name", "smiles", "pose"}
+                )
+                score_sequence += 1
+                score_store.execute(
+                    "INSERT INTO poses(sequence, affinity, row_json) VALUES (?, ?, ?)",
+                    (score_sequence, row.get("affinity"), json.dumps(row)),
                 )
             job.success_count += 1
         except Exception as exc:
             (task_root / "error.json").write_text(json.dumps({"error": str(exc)}, indent=2))
             job.failed_count += 1
         job.completed_count += 1
+        score_store.commit()
         db.commit()
-    aggregate.sort(
-        key=lambda row: (
-            row.get("affinity") is None,
-            row.get("affinity") if row.get("affinity") is not None else 0.0,
+    _write_streamed_score_csv(score_store, job_root / "scores.csv", score_fields)
+    score_store.close()
+    score_store_path.unlink(missing_ok=True)
+    indexed_ligands = [
+        ligand
+        for ligand_id in job.ligand_ids
+        if (ligand := db.get(Ligand, ligand_id)) is not None
+    ]
+    results_index = open_results_index(project_root / "docking" / "results.sqlite")
+    try:
+        index_job_csv(
+            results_index,
+            job={
+                "job_id": job.id,
+                "job_name": job.name,
+                "engine": job.engine,
+                "created_at": job.created_at.isoformat(),
+                "protein_id": protein.id,
+                "receptor_name": protein.name,
+            },
+            csv_path=job_root / "scores.csv",
+            job_root=job_root,
+            ligand_names={ligand.id: ligand.name for ligand in indexed_ligands},
+            ligand_smiles={ligand.id: ligand.smiles for ligand in indexed_ligands},
         )
-    )
-    with (job_root / "scores.csv").open("w", newline="") as handle:
-        score_fields = sorted(
-            {
-                key
-                for row in aggregate
-                for key in row
-                if key not in {"ligand_code", "ligand_id", "smiles", "pose"}
-            }
-        )
-        if "affinity" in score_fields:
-            score_fields.remove("affinity")
-            score_fields.insert(0, "affinity")
-        writer = csv.DictWriter(
-            handle, fieldnames=["rank", "ligand_code", "ligand_id", "smiles", "pose", *score_fields]
-        )
-        writer.writeheader()
-        for rank, row in enumerate(aggregate, start=1):
-            writer.writerow({"rank": rank, **row})
+    finally:
+        results_index.close()
     if job.status != JobStatus.CANCELLED:
         _finish(
             job,

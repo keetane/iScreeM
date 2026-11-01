@@ -27,6 +27,7 @@ from app.services.pdb import (
     receptor_atom_coordinates,
     restore_hetero_connectivity,
     select_docking_receptor_source,
+    write_autobox_ligand,
     write_docking_receptor,
     write_receptor_without_hetatm,
     write_structure_without_residues,
@@ -45,7 +46,13 @@ from app.services.protein_prep import (
 from app.services.pubchem import resolve_ligand_queries
 from app.services.sdf import split_sdf_records
 from app.services.sdf_export import append_sdf_properties
-from app.services.storage_names import docking_job_root, readable_name, unique_directory_name
+from app.services.storage_names import (
+    docking_job_root,
+    readable_docking_name,
+    readable_name,
+    unique_directory_name,
+    unique_docking_job_id,
+)
 
 
 def test_command_resolution_falls_back_to_active_python_environment(tmp_path: Path, monkeypatch):
@@ -347,6 +354,47 @@ def test_storage_names_are_dated_readable_and_unique(tmp_path: Path):
     )
 
 
+def test_docking_names_include_minute_and_optional_safe_comment():
+    moment = datetime(2026, 11, 1, 9, 5, tzinfo=ZoneInfo("Asia/Tokyo"))
+
+    assert (
+        readable_docking_name("smina docking · 6ETJ", current_time=moment)
+        == "202611010905_smina_docking_6ETJ"
+    )
+    assert (
+        readable_docking_name(
+            "smina docking · 6ETJ",
+            comment="control / ATP site",
+            current_time=moment,
+        )
+        == "202611010905_smina_docking_6ETJ_control_ATP_site"
+    )
+
+
+def test_unique_docking_name_keeps_comment_at_end():
+    class Existing:
+        pass
+
+    class FakeDb:
+        existing = {"202611010905_smina_docking_6ETJ_control"}
+
+        def get(self, _model, candidate):
+            return object() if candidate in self.existing else None
+
+    moment = datetime(2026, 11, 1, 9, 5, tzinfo=ZoneInfo("Asia/Tokyo"))
+
+    assert (
+        unique_docking_job_id(
+            FakeDb(),
+            Existing,
+            "smina docking · 6ETJ",
+            comment="control",
+            current_time=moment,
+        )
+        == "202611010905_smina_docking_6ETJ_02_control"
+    )
+
+
 def test_docking_job_root_keeps_legacy_directory_compatibility(tmp_path: Path):
     legacy = tmp_path / "docking" / "job_legacy-uuid"
     legacy.mkdir(parents=True)
@@ -600,6 +648,80 @@ def test_docking_receptor_keeps_only_selected_waters(tmp_path: Path):
     assert "ATP" not in written
 
 
+def test_write_autobox_ligand_extracts_only_selected_original_hetatm(tmp_path: Path):
+    source = tmp_path / "original.pdb"
+    destination = tmp_path / "autobox_ligand.pdb"
+    source.write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 20.00           C  \n"
+        "HETATM    2  C1  LIG A 201      10.000  11.000  12.000  1.00 20.00           C  \n"
+        "HETATM    3  O1  LIG A 201      11.000  11.000  12.000  1.00 20.00           O  \n"
+        "HETATM    4  C1  LIG B 202      30.000  31.000  32.000  1.00 20.00           C  \n"
+        "HETATM    5  O   HOH A 301      10.000  10.000  10.000  1.00 20.00           O  \n"
+        "END\n"
+    )
+
+    coordinates = write_autobox_ligand(
+        source,
+        destination,
+        name="LIG",
+        chain="A",
+        residue_number="201",
+    )
+    written = destination.read_text()
+
+    assert coordinates == [[10.0, 11.0, 12.0], [11.0, 11.0, 12.0]]
+    assert written.count("HETATM") == 2
+    assert "LIG A 201" in written
+    assert "LIG B 202" not in written
+    assert "HOH" not in written
+
+
+def test_write_autobox_ligand_accepts_cif_label_chain_id(tmp_path: Path):
+    source = tmp_path / "original.cif"
+    destination = tmp_path / "autobox_ligand.pdb"
+    source.write_text(
+        """data_autobox_label_chain
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.label_entity_id
+_atom_site.label_alt_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.pdbx_formal_charge
+_atom_site.pdbx_PDB_model_num
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+ATOM 1 C CA ALA A 1 1 . A 1 ALA CA ? ? 1 0.0 0.0 0.0 1.0 20.0
+HETATM 2 C C1 BWW D . 4 . A 603 BWW C1 ? ? 1 10.0 11.0 12.0 1.0 20.0
+HETATM 3 O O1 BWW D . 4 . A 603 BWW O1 ? ? 1 11.0 11.0 12.0 1.0 20.0
+"""
+    )
+
+    coordinates = write_autobox_ligand(
+        source,
+        destination,
+        name="BWW",
+        chain="D",
+        residue_number="603",
+    )
+
+    assert coordinates == [[10.0, 11.0, 12.0], [11.0, 11.0, 12.0]]
+    assert destination.read_text().count("HETATM") == 2
+    assert "BWW A 603" in destination.read_text()
+
+
 def test_docking_receptor_source_falls_back_to_unprepared_original(tmp_path: Path):
     original = tmp_path / "original.pdb"
     original.write_text("ATOM\n")
@@ -669,24 +791,228 @@ def test_global_search_box_covers_all_receptor_atoms(tmp_path: Path):
     assert approximate is False
 
 
-def test_docking_upload_smi_is_three_dimensional_and_job_only(tmp_path: Path):
-    pytest.importorskip("rdkit")
-    from rdkit import Chem
-
-    from app.services.docking_uploads import prepare_docking_upload
+def test_docking_upload_smi_defers_three_dimensional_preparation(tmp_path: Path):
+    from app.services.docking_uploads import (
+        iter_docking_upload_ligands,
+        prepare_docking_upload,
+    )
 
     source = tmp_path / "ligands.smi"
-    source.write_text("CCO ethanol\nCC(=O)O acetic acid\n")
+    source.write_text("CCO ethanol\nnot-yet-validated deferred ligand\n")
     root = tmp_path / "upload-id"
     manifest = prepare_docking_upload(source, root, source.name)
-    assert len(manifest["ligands"]) == 2
-    assert manifest["ligands"][0]["smiles"] == "CCO"
-    molecule = next(
-        mol for mol in Chem.SDMolSupplier(manifest["ligands"][0]["sdf_path"], removeHs=False) if mol
-    )
-    coordinates = molecule.GetConformer().GetPositions()
-    assert any(abs(float(value)) > 1e-4 for value in coordinates[:, 2])
+    entries = list(iter_docking_upload_ligands(manifest))
+
+    assert manifest["streaming"] is True
+    assert "ligands" not in manifest
+    assert manifest["ligand_count"] == 2
+    assert entries[0]["smiles"] == "CCO"
+    assert entries[1]["smiles"] == "not-yet-validated"
+    assert not list(root.glob("*.sdf"))
     assert (root / "manifest.json").is_file()
+
+
+def test_docking_upload_has_no_molecule_count_limit(tmp_path: Path):
+    from app.services.docking_uploads import (
+        iter_docking_upload_ligands,
+        prepare_docking_upload,
+    )
+
+    source = tmp_path / "large-library.smi"
+    source.write_text("".join(f"CC ligand-{index}\n" for index in range(5001)))
+    root = tmp_path / "large-upload"
+
+    manifest = prepare_docking_upload(source, root, source.name)
+    count = 0
+    last = None
+    for count, last in enumerate(iter_docking_upload_ligands(manifest), 1):
+        pass
+
+    assert manifest["ligand_count"] == 5001
+    assert count == 5001
+    assert last and last["name"] == "ligand-5000"
+    assert (root / "manifest.json").stat().st_size < 1000
+    assert not list(root.glob("*.sdf"))
+
+
+def test_docking_upload_sdf_materializes_one_record_on_demand(tmp_path: Path):
+    from app.services.docking_uploads import (
+        iter_docking_upload_ligands,
+        materialize_sdf_record,
+        prepare_docking_upload,
+    )
+
+    source = tmp_path / "source.sdf"
+    source.write_text(
+        "first ligand\nrecord one\n$$$$\n"
+        "second ligand\nrecord two\n$$$$\n"
+    )
+    root = tmp_path / "upload-id"
+    manifest = prepare_docking_upload(source, root, source.name)
+    entries = iter_docking_upload_ligands(manifest)
+    first = next(entries)
+    entry = next(entries)
+
+    output = materialize_sdf_record(entry, tmp_path / "task" / "ligand.uploaded.sdf")
+
+    assert manifest["ligand_count"] == 2
+    assert first["name"] == "first ligand"
+    assert output.read_text() == "second ligand\nrecord two\n$$$$\n"
+
+
+def test_streamed_docking_scores_are_sorted_on_disk(tmp_path: Path):
+    import csv
+    import json
+    import sqlite3
+
+    from app.workers import _write_streamed_score_csv
+
+    store = sqlite3.connect(":memory:")
+    store.execute(
+        "CREATE TABLE poses (sequence INTEGER PRIMARY KEY, affinity REAL, row_json TEXT NOT NULL)"
+    )
+    rows = [
+        {
+            "ligand_code": "second",
+            "ligand_id": "",
+            "ligand_name": "Second",
+            "smiles": "N",
+            "pose": 1,
+            "affinity": -5.0,
+        },
+        {
+            "ligand_code": "first",
+            "ligand_id": "",
+            "ligand_name": "First",
+            "smiles": "C",
+            "pose": 1,
+            "affinity": -8.0,
+        },
+        {
+            "ligand_code": "unscored",
+            "ligand_id": "",
+            "ligand_name": "Unscored",
+            "smiles": "O",
+            "pose": 1,
+        },
+    ]
+    for sequence, row in enumerate(rows, 1):
+        store.execute(
+            "INSERT INTO poses(sequence, affinity, row_json) VALUES (?, ?, ?)",
+            (sequence, row.get("affinity"), json.dumps(row)),
+        )
+    destination = tmp_path / "scores.csv"
+
+    _write_streamed_score_csv(store, destination, {"affinity"})
+
+    with destination.open(newline="") as handle:
+        written = list(csv.DictReader(handle))
+    assert [row["ligand_code"] for row in written] == ["first", "second", "unscored"]
+    assert [row["rank"] for row in written] == ["1", "2", "3"]
+    assert written[0]["ligand_name"] == "First"
+
+
+def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
+    import csv
+
+    from app.services.docking_result_pages import (
+        index_job_csv,
+        open_results_index,
+        query_result_page,
+        query_selected_results,
+        sync_hidden_jobs,
+        sync_hidden_ligands,
+    )
+
+    job_root = tmp_path / "job"
+    job_root.mkdir()
+    csv_path = job_root / "scores.csv"
+    with csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "rank",
+                "ligand_code",
+                "ligand_id",
+                "ligand_name",
+                "smiles",
+                "pose",
+                "affinity",
+                "rmsd_lb",
+            ],
+        )
+        writer.writeheader()
+        for index in range(105):
+            code = f"ligand-{index:03d}"
+            task_root = job_root / code
+            task_root.mkdir()
+            (task_root / "docked.sdf").write_text("pose\n$$$$\n")
+            writer.writerow(
+                {
+                    "rank": index + 1,
+                    "ligand_code": code,
+                    "ligand_id": "",
+                    "ligand_name": code,
+                    "smiles": "C",
+                    "pose": 1,
+                    "affinity": -10 + index / 10,
+                    "rmsd_lb": index / 10,
+                }
+            )
+    connection = open_results_index(tmp_path / "results.sqlite")
+    index_job_csv(
+        connection,
+        job={
+            "job_id": "job-1",
+            "job_name": "Large docking",
+            "engine": "smina",
+            "created_at": "2026-10-31T00:00:00+00:00",
+            "protein_id": "protein-1",
+            "receptor_name": "Receptor 1",
+        },
+        csv_path=csv_path,
+        job_root=job_root,
+        ligand_names={},
+        ligand_smiles={},
+    )
+
+    first_page = query_result_page(
+        connection, page=1, sort_key="affinity", direction="asc"
+    )
+    second_page = query_result_page(
+        connection, page=2, sort_key="affinity", direction="asc"
+    )
+    score_sorted = query_result_page(
+        connection, page=1, sort_key="score:rmsd_lb", direction="desc"
+    )
+    selected = query_selected_results(
+        connection,
+        [("job-1", "ligand-104", 1), ("job-1", "ligand-000", 1)],
+    )
+    sync_hidden_ligands(connection, {"job-1:ligand-000"})
+    hidden = query_result_page(
+        connection, page=1, sort_key="rank", direction="asc"
+    )
+
+    assert first_page["total"] == 105
+    assert len(first_page["items"]) == 100
+    assert first_page["items"][0]["ligand_code"] == "ligand-000"
+    assert len(second_page["items"]) == 5
+    assert score_sorted["items"][0]["ligand_code"] == "ligand-104"
+    assert score_sorted["score_columns"] == ["rmsd_lb"]
+    assert [row["ligand_code"] for row in selected] == ["ligand-104", "ligand-000"]
+    assert hidden["total"] == 104
+    assert hidden["items"][0]["ligand_code"] == "ligand-001"
+    with pytest.raises(ValueError, match="ligand-000"):
+        query_selected_results(connection, [("job-1", "ligand-000", 1)])
+    sync_hidden_jobs(connection, {"job-1"})
+    job_hidden = query_result_page(
+        connection, page=1, sort_key="rank", direction="asc"
+    )
+    assert job_hidden["total"] == 0
+    with pytest.raises(ValueError, match="ligand-104"):
+        query_selected_results(connection, [("job-1", "ligand-104", 1)])
+    connection.close()
 
 
 def test_cif_parser():
@@ -703,15 +1029,23 @@ def test_adapters_only_emit_explicit_options(tmp_path: Path):
         tmp_path / "out.sdf",
         {"x": 1, "y": 2, "z": 3},
         {"x": 18, "y": 19, "z": 20},
-        {"num_modes": 9, "seed": 0},
+        {"num_modes": 9, "seed": 0, "local_only": True},
     )
     smina = SminaAdapter().build_args(item)
     assert "--num_modes" in smina and "--cpu" not in smina and Path(smina[0]).name == "smina"
     assert smina[smina.index("--seed") + 1] == "0"
+    assert "--local_only" in smina
     gnina = GninaAdapter().build_args(
         DockingInput(**{**item.__dict__, "parameters": {"cnn_scoring": "rescore", "no_gpu": True}})
     )
     assert Path(gnina[0]).name == "gnina" and "--cnn_scoring" in gnina and "--no_gpu" in gnina
+
+    autobox = tmp_path / "original-ligand.pdb"
+    autobox_args = SminaAdapter().build_args(
+        DockingInput(**{**item.__dict__, "autobox_ligand": autobox})
+    )
+    assert autobox_args[autobox_args.index("--autobox_ligand") + 1] == str(autobox)
+    assert "--center_x" not in autobox_args and "--size_x" not in autobox_args
 
 
 @pytest.mark.integration

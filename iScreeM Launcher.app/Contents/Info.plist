@@ -18,5 +18,14 @@
 	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSArchitecturePriority</key>
+	<array>
+		<string>arm64</string>
+		<string>x86_64</string>
+	</array>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>iScreeM needs access to its project directory to read and write molecular docking data.</string>
 </dict>
 </plist>
