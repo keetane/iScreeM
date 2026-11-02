@@ -897,7 +897,14 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
             )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    if body.local_only:
+    if body.template_docking and not body.autobox_ligand:
+        raise HTTPException(
+            422,
+            "Template docking builds each pose on a reference ligand. Choose that ligand "
+            "under Grid / search area, below autobox_ligand.",
+        )
+    # Template docking supplies the pose itself, so SMILES input is expected there.
+    if body.local_only and not body.template_docking:
         pose_error = local_only_input_error(pose_sources)
         if pose_error:
             raise HTTPException(422, pose_error)
@@ -909,6 +916,10 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
         "grid" if grid else "autobox_ligand" if body.autobox_ligand else "global_without_grid"
     )
     snapshot["receptor_preparation"] = receptor_preparation
+    if body.template_docking:
+        # The template already places the ligand, so the engine refines it in
+        # place instead of searching the box and losing the binding mode.
+        snapshot["local_only"] = True
     snapshot["docking_uploads"] = docking_uploads
     snapshot["auto_prepare_unprepared_ligands"] = True
     snapshot["deferred_upload_preparation"] = True

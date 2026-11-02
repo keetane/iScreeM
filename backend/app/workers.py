@@ -39,6 +39,7 @@ from .services.pocket_volume import find_p2rank_points, pocket_metrics, read_p2r
 from .services.protein_prep import protonate_with_pdb2pqr, repair_with_pdbfixer, write_report
 from .services.score_parser import combine_scores, parse_docking_scores, scores_from_sdf
 from .services.storage_names import docking_job_root, unique_database_id
+from .services.template_pose import load_template, template_pose
 
 
 def _finish(job: DockingJob, status: JobStatus, error: str | None = None):
@@ -82,10 +83,47 @@ def _write_streamed_score_csv(
             writer.writerow({"rank": rank, **json.loads(row_json)})
 
 
-def prepare_docking_ligand(ligand: dict, prepared_input: Path) -> dict:
+def _molecule_graph(ligand: dict, source: Path | None):
+    """Read a ligand's chemistry, ignoring any coordinates it carries."""
+    from rdkit import Chem
+
+    smiles = (ligand.get("smiles") or "").strip()
+    if smiles:
+        molecule = Chem.MolFromSmiles(smiles)
+        if molecule is None:
+            raise ValueError(f"RDKit could not parse SMILES for {ligand['name']}")
+        return molecule
+    if source is not None and source.is_file():
+        molecule = next(
+            (mol for mol in Chem.SDMolSupplier(str(source), removeHs=False) if mol is not None),
+            None,
+        )
+        if molecule is not None:
+            return molecule
+    raise ValueError(f"No ligand structure was available for {ligand['name']}")
+
+
+def prepare_docking_ligand(ligand: dict, prepared_input: Path, template=None) -> dict:
     """Normalize an existing library SDF or automatically prepare SMILES."""
     ligand_input = ligand.get("input")
     ligand_source = _absolute_path(ligand_input) if ligand_input else None
+    if template is not None:
+        # Template docking builds the pose itself, so any coordinates the input
+        # happens to carry are replaced by the template-aligned ones.
+        molecule, canonical_smiles, core_atoms = template_pose(
+            _molecule_graph(ligand, ligand_source),
+            template,
+            name=ligand["name"],
+            seed=int(ligand["preparation_seed"]),
+            force_field=ligand["force_field"],
+        )
+        write_validated_sdf(molecule, prepared_input)
+        return {
+            "canonical_smiles": canonical_smiles,
+            "preparation_source": "template_pose",
+            "template_core_atoms": core_atoms,
+            "input_validated": True,
+        }
     if ligand_source is not None and ligand_source.is_file():
         report = normalize_prepared_sdf(
             ligand_source,
@@ -449,6 +487,17 @@ def run_docking(job_id: str):
     # Keeping an uploaded pose only makes sense for coordinates the user
     # supplied; a SMILES-derived conformer has no pose worth preserving.
     keep_uploaded_pose = bool(params.get("keep_uploaded_pose"))
+    # Template docking builds every pose on the autobox ligand, which the API
+    # has already required for this mode.
+    template_molecule = None
+    if params.get("template_docking"):
+        try:
+            template_molecule = load_template(autobox_ligand_path)
+        except (OSError, ValueError, TypeError) as exc:
+            _finish(job, JobStatus.FAILED, f"Template ligand is unusable: {exc}")
+            db.commit()
+            db.close()
+            raise
 
     def docking_tasks():
         for ligand_id in job.ligand_ids:
@@ -517,7 +566,9 @@ def run_docking(job_id: str):
                     )
                 )
             prepared_input = task_root / "ligand.prepared.sdf"
-            preparation_report = prepare_docking_ligand(ligand, prepared_input)
+            preparation_report = prepare_docking_ligand(
+                ligand, prepared_input, template=template_molecule
+            )
             ligand["smiles"] = preparation_report.get(
                 "canonical_smiles", ligand.get("smiles", "")
             )

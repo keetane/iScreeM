@@ -1263,3 +1263,58 @@ def test_relaxing_an_uploaded_pose_still_changes_the_geometry(tmp_path: Path):
     relaxed = next(Chem.SDMolSupplier(str(tmp_path / "relaxed.sdf"), removeHs=False))
     assert _max_shift(before, _heavy_positions(tmp_path / "relaxed.sdf")) > 1e-3
     assert "MMFF94s" in relaxed.GetProp("IDOCK_PREPARATION")
+
+
+BENZAMIDE_TEMPLATE_PDB = """\
+HETATM    1  C1  LIG A 301      10.000  10.000  10.000  1.00  0.00           C
+HETATM    2  C2  LIG A 301      11.390  10.000  10.000  1.00  0.00           C
+HETATM    3  C3  LIG A 301      12.085  11.204  10.000  1.00  0.00           C
+HETATM    4  C4  LIG A 301      11.390  12.408  10.000  1.00  0.00           C
+HETATM    5  C5  LIG A 301      10.000  12.408  10.000  1.00  0.00           C
+HETATM    6  C6  LIG A 301       9.305  11.204  10.000  1.00  0.00           C
+HETATM    7  C7  LIG A 301       9.260   8.700  10.000  1.00  0.00           C
+HETATM    8  O1  LIG A 301       8.030   8.640  10.000  1.00  0.00           O
+HETATM    9  N1  LIG A 301       9.960   7.560  10.000  1.00  0.00           N
+END
+"""
+
+
+def test_template_pose_places_an_analogue_on_the_reference(tmp_path: Path):
+    pytest.importorskip("rdkit.Chem")
+    from rdkit import Chem
+
+    from app.services.template_pose import load_template, template_pose
+
+    source = tmp_path / "template.pdb"
+    source.write_text(BENZAMIDE_TEMPLATE_PDB)
+    template = load_template(source)
+
+    posed, smiles, core_atoms = template_pose(
+        Chem.MolFromSmiles("Cc1ccccc1C(N)=O"), template, name="analogue", seed=61453
+    )
+
+    assert core_atoms >= 9
+    assert smiles == Chem.CanonSmiles("Cc1ccccc1C(N)=O")
+    template_positions = template.GetConformer().GetPositions()
+    posed_positions = Chem.RemoveHs(posed).GetConformer().GetPositions()
+    offset = max(
+        abs(sum(row[axis] for row in posed_positions) / len(posed_positions)
+            - sum(row[axis] for row in template_positions) / len(template_positions))
+        for axis in range(3)
+    )
+    assert offset < 1.5
+    assert posed.GetProp("IDOCK_TEMPLATE_CORE_ATOMS") == str(core_atoms)
+
+
+def test_template_pose_rejects_a_molecule_without_a_shared_core(tmp_path: Path):
+    pytest.importorskip("rdkit.Chem")
+    from rdkit import Chem
+
+    from app.services.template_pose import load_template, template_pose
+
+    source = tmp_path / "template.pdb"
+    source.write_text(BENZAMIDE_TEMPLATE_PDB)
+    template = load_template(source)
+
+    with pytest.raises(ValueError, match="shares only"):
+        template_pose(Chem.MolFromSmiles("CCO"), template, name="ethanol", seed=61453)

@@ -1326,7 +1326,7 @@ function DockingSetup({
     [seed, setSeed] = useState("0"),
     [comment, setComment] = useState(""),
     [withH2O, setWithH2O] = useState(false),
-    [localOnly, setLocalOnly] = useState(false),
+    [templateDocking, setTemplateDocking] = useState(false),
     [keepUploadedPose, setKeepUploadedPose] = useState(false),
     [searchSelection, setSearchSelection] = useState("global"),
     [uploads, setUploads] = useState<DockingUpload[]>([]);
@@ -1507,21 +1507,25 @@ function DockingSetup({
                 />
               </div>
             </div>
-            <label className="flex h-10 items-center gap-2 text-xs font-semibold text-slate-200">
+            <label
+              className="flex h-10 items-center gap-2 text-xs font-semibold text-slate-200"
+              title="Build each pose on the autobox ligand selected above, holding the atoms it shares with that reference, then refine it in place. Scores a generated series in one binding mode."
+            >
               <input
                 type="checkbox"
-                checked={localOnly}
-                onChange={(event) => setLocalOnly(event.target.checked)}
+                checked={templateDocking}
+                onChange={(event) => setTemplateDocking(event.target.checked)}
               />
-              Local only
+              Template docking
             </label>
             <label
               className="flex h-10 items-center gap-2 text-xs font-semibold text-slate-200"
-              title="Dock uploaded SDF ligands from the coordinates in the file. Without this the geometry is relaxed in vacuum first, which moves a docked or template-aligned pose by about 2 A."
+              title="Dock uploaded SDF ligands from the coordinates in the file. Without this the geometry is relaxed in vacuum first, which moves an aligned pose by about 2 A."
             >
               <input
                 type="checkbox"
                 checked={keepUploadedPose}
+                disabled={templateDocking}
                 onChange={(event) => setKeepUploadedPose(event.target.checked)}
               />
               Keep uploaded pose
@@ -1590,8 +1594,9 @@ function DockingSetup({
                   exhaustiveness,
                   num_modes: modes,
                   seed: seed.trim() === "" ? null : Number(seed),
-                  local_only: localOnly,
-                  keep_uploaded_pose: keepUploadedPose,
+                  template_docking: templateDocking,
+                  keep_uploaded_pose:
+                    keepUploadedPose && !templateDocking,
                   ...(engine === "gnina" ? { cnn_scoring: "rescore" } : {}),
                 }),
               "Docking job queued",
