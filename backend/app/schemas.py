@@ -97,6 +97,7 @@ class DockingRequest(BaseModel):
     seed: int | None = None
     min_rmsd_filter: float | None = Field(default=None, gt=0)
     local_only: bool = False
+    keep_uploaded_pose: bool = False
     cnn_scoring: Literal["none", "rescore", "refinement", "all"] | None = None
     no_gpu: bool = False
 

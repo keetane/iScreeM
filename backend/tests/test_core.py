@@ -21,6 +21,7 @@ from app.services.export_names import export_filename
 from app.services.grids import grid_from_coordinates, point_in_grid
 from app.services.ligand_normalization import (
     normalize_docked_sdf,
+    normalize_prepared_sdf,
     prepare_3d_molecule,
     write_validated_sdf,
 )
@@ -1196,3 +1197,69 @@ def test_point_in_grid_includes_the_box_edge():
 
     assert point_in_grid((5.0, 0.0, 0.0), center, size)
     assert not point_in_grid((5.1, 0.0, 0.0), center, size)
+
+
+def _strained_pose_sdf(path: Path):
+    """Write a deliberately strained conformer a force field would change."""
+    Chem = pytest.importorskip("rdkit.Chem")
+    AllChem = pytest.importorskip("rdkit.Chem.AllChem")
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    AllChem.EmbedMolecule(mol, randomSeed=0xF00D)
+    conformer = mol.GetConformer()
+    for index in range(mol.GetNumAtoms()):
+        position = conformer.GetAtomPosition(index)
+        conformer.SetAtomPosition(index, (position.x * 1.25, position.y, position.z + 20.0))
+    Chem.SDWriter(str(path)).write(mol)
+    return Chem
+
+
+def _heavy_positions(path: Path):
+    """Hydrogens are always rebuilt, so only heavy atoms carry the pose."""
+    Chem = pytest.importorskip("rdkit.Chem")
+    molecule = next(Chem.SDMolSupplier(str(path), removeHs=False))
+    return Chem.RemoveHs(molecule).GetConformer().GetPositions()
+
+
+def _max_shift(before, after) -> float:
+    return max(
+        abs(b - a)
+        for row_b, row_a in zip(before, after)
+        for b, a in zip(row_b, row_a)
+    )
+
+
+def test_keeping_an_uploaded_pose_leaves_the_coordinates_untouched(tmp_path: Path):
+    source = tmp_path / "pose.sdf"
+    Chem = _strained_pose_sdf(source)
+    before = _heavy_positions(source)
+
+    normalize_prepared_sdf(
+        source,
+        tmp_path / "kept.sdf",
+        name="pose",
+        expected_smiles="",
+        seed=61453,
+        relax=False,
+    )
+
+    kept = next(Chem.SDMolSupplier(str(tmp_path / "kept.sdf"), removeHs=False))
+    assert _max_shift(before, _heavy_positions(tmp_path / "kept.sdf")) < 1e-6
+    assert kept.GetProp("IDOCK_PREPARATION") == "RDKit Cleanup, uploaded pose kept"
+
+
+def test_relaxing_an_uploaded_pose_still_changes_the_geometry(tmp_path: Path):
+    source = tmp_path / "pose.sdf"
+    Chem = _strained_pose_sdf(source)
+    before = _heavy_positions(source)
+
+    normalize_prepared_sdf(
+        source,
+        tmp_path / "relaxed.sdf",
+        name="pose",
+        expected_smiles="",
+        seed=61453,
+    )
+
+    relaxed = next(Chem.SDMolSupplier(str(tmp_path / "relaxed.sdf"), removeHs=False))
+    assert _max_shift(before, _heavy_positions(tmp_path / "relaxed.sdf")) > 1e-3
+    assert "MMFF94s" in relaxed.GetProp("IDOCK_PREPARATION")

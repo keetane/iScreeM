@@ -94,6 +94,7 @@ def prepare_docking_ligand(ligand: dict, prepared_input: Path) -> dict:
             expected_smiles=ligand["smiles"],
             seed=int(ligand["preparation_seed"]),
             force_field=ligand["force_field"],
+            relax=bool(ligand.get("relax", True)),
         )
         report["preparation_source"] = ligand.get(
             "preparation_source", "ligand_library"
@@ -445,6 +446,10 @@ def run_docking(job_id: str):
         db.close()
         raise
 
+    # Keeping an uploaded pose only makes sense for coordinates the user
+    # supplied; a SMILES-derived conformer has no pose worth preserving.
+    keep_uploaded_pose = bool(params.get("keep_uploaded_pose"))
+
     def docking_tasks():
         for ligand_id in job.ligand_ids:
             ligand = db.get(Ligand, ligand_id)
@@ -475,6 +480,7 @@ def run_docking(job_id: str):
                 "preparation_source": "uploaded_sdf_at_docking",
                 "preparation_seed": 61453,
                 "force_field": "MMFF94s",
+                "relax": not keep_uploaded_pose,
             }
         for upload in upload_manifests:
             for ligand in iter_docking_upload_ligands(upload):
@@ -485,6 +491,7 @@ def run_docking(job_id: str):
                     "preparation_source": "uploaded_sdf_at_docking",
                     "preparation_seed": 61453,
                     "force_field": "MMFF94s",
+                    "relax": not keep_uploaded_pose,
                 }
 
     score_store_path = job_root / "scores.sqlite"

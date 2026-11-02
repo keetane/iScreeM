@@ -1327,6 +1327,7 @@ function DockingSetup({
     [comment, setComment] = useState(""),
     [withH2O, setWithH2O] = useState(false),
     [localOnly, setLocalOnly] = useState(false),
+    [keepUploadedPose, setKeepUploadedPose] = useState(false),
     [searchSelection, setSearchSelection] = useState("global"),
     [uploads, setUploads] = useState<DockingUpload[]>([]);
   const uploadInput = useRef<HTMLInputElement>(null);
@@ -1514,6 +1515,17 @@ function DockingSetup({
               />
               Local only
             </label>
+            <label
+              className="flex h-10 items-center gap-2 text-xs font-semibold text-slate-200"
+              title="Dock uploaded SDF ligands from the coordinates in the file. Without this the geometry is relaxed in vacuum first, which moves a docked or template-aligned pose by about 2 A."
+            >
+              <input
+                type="checkbox"
+                checked={keepUploadedPose}
+                onChange={(event) => setKeepUploadedPose(event.target.checked)}
+              />
+              Keep uploaded pose
+            </label>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="label">Exhaustiveness</div>
@@ -1579,6 +1591,7 @@ function DockingSetup({
                   num_modes: modes,
                   seed: seed.trim() === "" ? null : Number(seed),
                   local_only: localOnly,
+                  keep_uploaded_pose: keepUploadedPose,
                   ...(engine === "gnina" ? { cnn_scoring: "rescore" } : {}),
                 }),
               "Docking job queued",

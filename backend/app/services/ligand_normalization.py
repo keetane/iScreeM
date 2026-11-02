@@ -52,32 +52,45 @@ def prepare_3d_molecule(
     seed: int,
     force_field: str = "MMFF94s",
     preserve_existing_3d: bool = False,
+    relax: bool = True,
 ):
-    """Create a sanitized, normalized and validated explicit-H 3D ligand."""
+    """Create a sanitized, normalized and validated explicit-H 3D ligand.
+
+    `relax=False` keeps a supplied conformer exactly as it is. Relaxing in
+    vacuum moves a docked or template-aligned pose by roughly 2 A, which
+    destroys the alignment that constrained embedding set up.
+    """
     Chem, AllChem, _ = _rdkit()
     normalized = normalize_molecule(molecule)
     smiles = Chem.MolToSmiles(normalized, canonical=True, isomericSmiles=True)
     prepared = Chem.AddHs(normalized, addCoords=True)
-    if not preserve_existing_3d or not _has_3d_coordinates(prepared):
+    kept_pose = preserve_existing_3d and _has_3d_coordinates(prepared)
+    if not kept_pose:
         prepared.RemoveAllConformers()
         parameters = AllChem.ETKDGv3()
         parameters.randomSeed = seed
         if AllChem.EmbedMolecule(prepared, parameters) != 0:
             raise ValueError(f"ETKDGv3 conformer generation failed for {name}")
-    if AllChem.MMFFHasAllMoleculeParams(prepared):
-        status = AllChem.MMFFOptimizeMolecule(prepared, mmffVariant=force_field)
-    elif AllChem.UFFHasAllMoleculeParams(prepared):
-        status = AllChem.UFFOptimizeMolecule(prepared)
+    # A freshly embedded conformer is always relaxed; only a supplied pose can
+    # be kept untouched.
+    if relax or not kept_pose:
+        if AllChem.MMFFHasAllMoleculeParams(prepared):
+            status = AllChem.MMFFOptimizeMolecule(prepared, mmffVariant=force_field)
+        elif AllChem.UFFHasAllMoleculeParams(prepared):
+            status = AllChem.UFFOptimizeMolecule(prepared)
+        else:
+            status = 0
+        if status < 0:
+            raise ValueError(f"3D force-field preparation failed for {name}")
+        preparation = f"RDKit Cleanup + ETKDGv3 + {force_field}"
     else:
-        status = 0
-    if status < 0:
-        raise ValueError(f"3D force-field preparation failed for {name}")
+        preparation = "RDKit Cleanup, uploaded pose kept"
     Chem.SanitizeMol(prepared)
     if not _has_3d_coordinates(prepared):
         raise ValueError(f"Prepared ligand has no 3D coordinates: {name}")
     prepared.SetProp("_Name", name)
     prepared.SetProp("IDOCK_CANONICAL_SMILES", smiles)
-    prepared.SetProp("IDOCK_PREPARATION", f"RDKit Cleanup + ETKDGv3 + {force_field}")
+    prepared.SetProp("IDOCK_PREPARATION", preparation)
     return prepared, smiles
 
 
@@ -114,6 +127,7 @@ def normalize_prepared_sdf(
     expected_smiles: str,
     seed: int,
     force_field: str = "MMFF94s",
+    relax: bool = True,
 ) -> dict:
     """Revalidate and rewrite a job-local ligand immediately before docking."""
     Chem, _, _ = _rdkit()
@@ -124,6 +138,7 @@ def normalize_prepared_sdf(
         seed=seed,
         force_field=force_field,
         preserve_existing_3d=True,
+        relax=relax,
     )
     if expected_smiles:
         expected = canonical_smiles(Chem.MolFromSmiles(expected_smiles))
