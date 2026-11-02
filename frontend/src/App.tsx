@@ -1398,13 +1398,13 @@ function DockingSetup({
                 className={`engine ${engine === x ? "engine-active" : ""}`}
               >
                 <span>{x}</span>
-                <small>
-                  {tools[x]?.available
-                    ? "ready"
-                    : x === "gnina" && tools[x]?.error?.includes("macOS")
+                {!tools[x]?.available && (
+                  <small>
+                    {x === "gnina" && tools[x]?.error?.includes("macOS")
                       ? "Linux only"
                       : "unavailable"}
-                </small>
+                  </small>
+                )}
               </button>
             ))}
           </div>

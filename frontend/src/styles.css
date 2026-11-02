@@ -17,7 +17,7 @@
   .empty-panel{@apply rounded-xl border border-dashed border-line p-5 text-center text-xs leading-5 text-slate-500}
   .badge{@apply inline-flex rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-slate-400}.badge-warn{@apply border-amber/30 bg-amber/10 text-amber}
   .status-completed{@apply border-mint/30 bg-mint/10 text-mint}.status-running,.status-preparing,.status-postprocessing{@apply border-cyan/30 bg-cyan/10 text-cyan}.status-failed,.status-interrupted{@apply border-red-500/30 bg-red-500/10 text-red-300}.status-partial_success{@apply border-amber/30 bg-amber/10 text-amber}
-  .engine{@apply flex flex-col rounded-lg border border-line bg-ink/40 p-3 text-left text-sm text-slate-300 transition hover:border-slate-500 disabled:opacity-30}.engine small{@apply mt-1 text-[10px] text-slate-600}.engine-active{@apply border-cyan/50 bg-cyan/5 text-cyan ring-1 ring-cyan/20}
+  .engine{@apply flex items-center justify-between rounded-lg border border-line bg-ink/40 px-3 py-1.5 text-left text-sm text-slate-300 transition hover:border-slate-500 disabled:opacity-30}.engine small{@apply text-[10px] text-slate-600}.engine-active{@apply border-cyan/50 bg-cyan/5 text-cyan ring-1 ring-cyan/20}
   .table-wrap{@apply overflow-x-auto}table{@apply w-full border-collapse text-left text-xs}th{@apply cursor-pointer border-b border-line bg-ink/25 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500}td{@apply border-b border-line/60 px-4 py-3 text-slate-300}tbody tr{@apply transition hover:bg-slate-800/30}
 }
 
