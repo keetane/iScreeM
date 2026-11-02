@@ -16,3 +16,11 @@ def grid_from_coordinates(points: list[list[float]], fallback_center: dict | Non
     }
     return center, size, False
 
+
+def point_in_grid(point: tuple[float, float, float], center: dict, size: dict) -> bool:
+    """Report whether a coordinate falls inside the search box."""
+    return all(
+        abs(point[index] - float(center[axis])) <= float(size[axis]) / 2
+        for index, axis in enumerate("xyz")
+    )
+

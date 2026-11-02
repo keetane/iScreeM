@@ -35,6 +35,7 @@ from .schemas import (
     SmilesLigand,
 )
 from .services.commands import all_tools
+from .services.docking import local_only_input_error
 from .services.docking_result_pages import (
     index_job_csv,
     open_results_index,
@@ -63,7 +64,7 @@ from .services.pocket_volume import (
 )
 from .services.pubchem import resolve_ligand_queries
 from .services.queue import queue
-from .services.score_parser import parse_docking_scores
+from .services.score_parser import combine_scores, parse_docking_scores, scores_from_sdf
 from .services.sdf import split_sdf_records
 from .services.sdf_export import append_sdf_properties
 from .services.storage_names import (
@@ -872,21 +873,34 @@ def create_docking(project_id: str, body: DockingRequest, db: Session = Depends(
             raise HTTPException(422, f"Selected water molecule was not found: {unknown_h2o[0]}")
     docking_uploads: list[dict] = []
     uploaded_count = 0
+    pose_sources: list[tuple[str, str]] = [(ligand.name, "smiles") for ligand in ligands]
     project_root = (settings.data_dir / "projects" / project_id).resolve()
     try:
         for upload_id in dict.fromkeys(body.upload_ids):
             upload = load_docking_upload(project_root, upload_id)
             ligand_count = int(upload.get("ligand_count") or len(upload.get("ligands", [])))
             uploaded_count += ligand_count
+            original_name = upload.get("original_name", upload_id)
+            pose_sources.append(
+                (
+                    original_name,
+                    upload.get("source_format")
+                    or Path(original_name).suffix.lstrip(".").lower(),
+                )
+            )
             docking_uploads.append(
                 {
                     "upload_id": upload.get("upload_id", upload_id),
-                    "original_name": upload.get("original_name", upload_id),
+                    "original_name": original_name,
                     "ligand_count": ligand_count,
                 }
             )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(422, str(exc)) from exc
+    if body.local_only:
+        pose_error = local_only_input_error(pose_sources)
+        if pose_error:
+            raise HTTPException(422, pose_error)
     comment = body.comment.strip()
     snapshot = body.model_dump(exclude_none=True)
     snapshot["comment"] = comment
@@ -1009,8 +1023,12 @@ def _scores_from_task(task_root: Path) -> list[dict]:
             + (task_root / "docking.stderr.log").read_text()
         )
     except OSError:
-        return scores
-    parsed = parse_docking_scores(output)
+        output = ""
+    # The engine's own SDF tags are the most complete record of a pose, so they
+    # win over both the stored summary and the log.
+    parsed = combine_scores(
+        scores_from_sdf(task_root / "docked.raw.sdf"), parse_docking_scores(output)
+    )
     # Older jobs stored affinity only in scores.json. Prefer the richer table
     # parsed from the preserved engine log when it contains additional scores.
     if parsed and any(len(item) > 1 for item in parsed):

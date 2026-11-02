@@ -64,3 +64,25 @@ class GninaAdapter(DockingAdapter):
 
 
 ADAPTERS = {"smina": SminaAdapter(), "gnina": GninaAdapter()}
+
+# Only an SDF can carry a docked pose. Every other input is SMILES, and the
+# 3D coordinates generated for it sit at the origin rather than in the pocket.
+POSE_BEARING_FORMATS = {"sdf"}
+
+
+def local_only_input_error(inputs: list[tuple[str, str]]) -> str | None:
+    """Reject --local_only runs whose ligands cannot supply a pose.
+
+    --local_only minimises the supplied coordinates without ever moving the
+    ligand into the search box, so SMILES input is scored hundreds of angstroms
+    away from the receptor and every affinity comes back as 0.
+    """
+    for name, source_format in inputs:
+        if (source_format or "").lower() in POSE_BEARING_FORMATS:
+            continue
+        return (
+            f'Local only minimises the pose you supply, but "{name}" comes from SMILES '
+            "and has no docked pose, so it would be scored outside the binding site. "
+            "Upload the docked poses as SDF, or clear Local only and set Number of modes to 1."
+        )
+    return None

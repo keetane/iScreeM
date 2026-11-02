@@ -18,11 +18,12 @@ from .services.docking_uploads import (
     load_docking_upload,
     materialize_sdf_record,
 )
-from .services.grids import grid_from_coordinates
+from .services.grids import grid_from_coordinates, point_in_grid
 from .services.ligand_normalization import (
     normalize_docked_sdf,
     normalize_prepared_sdf,
     prepare_3d_molecule,
+    sdf_centroid,
     write_validated_sdf,
 )
 from .services.pdb import (
@@ -36,7 +37,7 @@ from .services.pdb import (
 )
 from .services.pocket_volume import find_p2rank_points, pocket_metrics, read_p2rank_points
 from .services.protein_prep import protonate_with_pdb2pqr, repair_with_pdbfixer, write_report
-from .services.score_parser import parse_docking_scores
+from .services.score_parser import combine_scores, parse_docking_scores, scores_from_sdf
 from .services.storage_names import docking_job_root, unique_database_id
 
 
@@ -513,6 +514,17 @@ def run_docking(job_id: str):
             ligand["smiles"] = preparation_report.get(
                 "canonical_smiles", ligand.get("smiles", "")
             )
+            if params.get("local_only"):
+                # --local_only never moves the ligand into the box, so a pose
+                # that starts outside it is scored away from the receptor and
+                # reports a meaningless 0 affinity.
+                centroid = sdf_centroid(prepared_input)
+                if centroid is None or not point_in_grid(centroid, search_center, search_size):
+                    raise RuntimeError(
+                        "Local only cannot dock this ligand: its pose lies outside the "
+                        "search box, so the engine would score it away from the receptor. "
+                        "Supply docked poses, or rerun without Local only."
+                    )
             output = task_root / "docked.sdf"
             raw_output = task_root / "docked.raw.sdf"
             item = DockingInput(
@@ -546,7 +558,12 @@ def run_docking(job_id: str):
                 )
             )
             output_text = result.stdout + "\n" + result.stderr
-            scores = parse_docking_scores(output_text)
+            # The engine tags every pose in its own output, which stays correct
+            # for both the pose table and --local_only runs; the log only fills
+            # in columns the SDF omits.
+            scores = combine_scores(
+                scores_from_sdf(raw_output), parse_docking_scores(output_text)
+            )
             (task_root / "scores.json").write_text(json.dumps(scores, indent=2))
             for pose_index, score in enumerate(scores, start=1):
                 row = {

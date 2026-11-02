@@ -81,6 +81,19 @@ def prepare_3d_molecule(
     return prepared, smiles
 
 
+def sdf_centroid(path: Path) -> tuple[float, float, float] | None:
+    """Return the mean atom position of the first record in an SDF."""
+    Chem, _, _ = _rdkit()
+    molecule = next(Chem.SDMolSupplier(str(path), removeHs=False, sanitize=False), None)
+    if molecule is None or molecule.GetNumConformers() == 0:
+        return None
+    positions = molecule.GetConformer().GetPositions()
+    count = len(positions)
+    if not count:
+        return None
+    return tuple(sum(axis) / count for axis in zip(*positions))
+
+
 def write_validated_sdf(molecule, destination: Path) -> None:
     Chem, _, _ = _rdkit()
     destination.parent.mkdir(parents=True, exist_ok=True)

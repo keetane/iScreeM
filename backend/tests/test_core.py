@@ -10,10 +10,15 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.services import commands, pubchem
-from app.services.docking import DockingInput, GninaAdapter, SminaAdapter
+from app.services.docking import (
+    DockingInput,
+    GninaAdapter,
+    SminaAdapter,
+    local_only_input_error,
+)
 from app.services.docking_csv import select_docking_results
 from app.services.export_names import export_filename
-from app.services.grids import grid_from_coordinates
+from app.services.grids import grid_from_coordinates, point_in_grid
 from app.services.ligand_normalization import (
     normalize_docked_sdf,
     prepare_3d_molecule,
@@ -42,6 +47,11 @@ from app.services.protein_prep import (
     _exclude_terminal_missing_residues,
     _missing_residue_report,
     _record_added_residue_numbers,
+)
+from app.services.score_parser import (
+    combine_scores,
+    parse_docking_scores,
+    scores_from_sdf,
 )
 from app.services.pubchem import resolve_ligand_queries
 from app.services.sdf import split_sdf_records
@@ -1074,3 +1084,115 @@ def test_real_meeko_receptor_preparation(tmp_path: Path):
     )
     assert done.returncode == 0, done.stderr
     assert output.with_suffix(".pdbqt").is_file()
+
+
+GNINA_POSE_TABLE = """
+mode |  affinity  |  intramol  |    CNN     |   CNN
+     | (kcal/mol) | (kcal/mol) | pose score | affinity
+-----+------------+------------+------------+----------
+    1      -10.25       -0.28       0.7601      5.428
+    2      -10.71       -0.91       0.6441      5.234
+"""
+
+GNINA_LOCAL_ONLY_OUTPUT = """
+Commandline: /usr/local/bin/gnina --local_only
+Affinity: 0.00000  -1.41088 (kcal/mol)
+RMSD: 1.79754
+CNNscore: 0.37937
+CNNaffinity: 3.90183
+CNNvariance: 0.04224
+"""
+
+
+def _sdf_record(**tags: float) -> str:
+    body = "pose\n  iScreeM\n\n  0  0  0  0  0  0            999 V2000\nM  END\n"
+    for name, value in tags.items():
+        body += f">  <{name}>\n{value}\n\n"
+    return body + "$$$$\n"
+
+
+def test_gnina_pose_table_keeps_both_cnn_columns():
+    parsed = parse_docking_scores(GNINA_POSE_TABLE)
+
+    assert parsed == [
+        {"affinity": -10.25, "intramol": -0.28, "cnn_score": 0.7601, "cnn_affinity": 5.428},
+        {"affinity": -10.71, "intramol": -0.91, "cnn_score": 0.6441, "cnn_affinity": 5.234},
+    ]
+
+
+def test_local_only_output_keeps_cnn_scores():
+    parsed = parse_docking_scores(GNINA_LOCAL_ONLY_OUTPUT)
+
+    assert parsed == [
+        {
+            "affinity": 0.0,
+            "intramol": -1.41088,
+            "rmsd": 1.79754,
+            "cnn_score": 0.37937,
+            "cnn_affinity": 3.90183,
+            "cnn_affinity_variance": 0.04224,
+        }
+    ]
+
+
+def test_scores_from_sdf_reads_every_pose(tmp_path: Path):
+    path = tmp_path / "docked.raw.sdf"
+    path.write_text(
+        _sdf_record(
+            IDOCK_PREPARATION="RDKit",
+            minimizedAffinity=-10.24745,
+            CNNscore=0.7601293325,
+            CNNaffinity=5.4279847145,
+            CNN_VS=4.1259703636,
+        )
+        + _sdf_record(minimizedAffinity=-10.70655, CNNscore=0.6440595388)
+    )
+
+    assert scores_from_sdf(path) == [
+        {
+            "affinity": -10.24745,
+            "cnn_score": 0.7601293325,
+            "cnn_affinity": 5.4279847145,
+            "cnn_vs": 4.1259703636,
+        },
+        {"affinity": -10.70655, "cnn_score": 0.6440595388},
+    ]
+
+
+def test_scores_from_sdf_ignores_a_missing_file(tmp_path: Path):
+    assert scores_from_sdf(tmp_path / "absent.sdf") == []
+
+
+def test_combine_scores_prefers_the_sdf_and_fills_log_only_columns():
+    combined = combine_scores(
+        [{"affinity": -10.24745, "cnn_vs": 4.126}],
+        [{"affinity": -10.25, "intramol": -0.28}],
+    )
+
+    assert combined == [{"affinity": -10.24745, "cnn_vs": 4.126, "intramol": -0.28}]
+
+
+def test_combine_scores_keeps_primary_when_pose_counts_disagree():
+    assert combine_scores([{"affinity": -1.0}], [{"affinity": -2.0}, {"affinity": -3.0}]) == [
+        {"affinity": -1.0}
+    ]
+
+
+def test_local_only_rejects_smiles_input():
+    message = local_only_input_error([("library.sdf", "sdf"), ("generated.csv", "csv")])
+
+    assert message is not None
+    assert "generated.csv" in message
+    assert "Number of modes" in message
+
+
+def test_local_only_accepts_sdf_input():
+    assert local_only_input_error([("poses.sdf", "sdf")]) is None
+
+
+def test_point_in_grid_includes_the_box_edge():
+    center = {"x": 0.0, "y": 0.0, "z": 0.0}
+    size = {"x": 10.0, "y": 10.0, "z": 10.0}
+
+    assert point_in_grid((5.0, 0.0, 0.0), center, size)
+    assert not point_in_grid((5.1, 0.0, 0.0), center, size)
