@@ -1330,6 +1330,18 @@ function DockingSetup({
     [keepUploadedPose, setKeepUploadedPose] = useState(false),
     [searchSelection, setSearchSelection] = useState("global"),
     [uploads, setUploads] = useState<DockingUpload[]>([]);
+  // gnina only pays for itself on a GPU, so it becomes the default once the
+  // system probe reports a CUDA device. A manual pick is never overridden.
+  const enginePicked = useRef(false);
+  useEffect(() => {
+    if (enginePicked.current || !Object.keys(tools).length) return;
+    enginePicked.current = true;
+    if (tools.cuda?.available && tools.gnina?.available) setEngine("gnina");
+  }, [tools]);
+  const chooseEngine = (value: "smina" | "gnina") => {
+    enginePicked.current = true;
+    setEngine(value);
+  };
   const uploadInput = useRef<HTMLInputElement>(null);
   const uploadedCount = uploads.reduce(
     (total, batch) => total + batch.ligand_count,
@@ -1390,11 +1402,17 @@ function DockingSetup({
                 key={x}
                 title={
                   tools[x]?.available
-                    ? `${tools[x]?.version || x} · ${tools[x]?.path || "PATH"}`
+                    ? `${tools[x]?.version || x} · ${tools[x]?.path || "PATH"}${
+                        x === "gnina"
+                          ? tools.cuda?.available
+                            ? ` · GPU: ${tools.cuda.version}`
+                            : " · no CUDA device, scoring runs on CPU"
+                          : ""
+                      }`
                     : tools[x]?.error || `${x} is unavailable`
                 }
                 disabled={!tools[x]?.available}
-                onClick={() => setEngine(x)}
+                onClick={() => chooseEngine(x)}
                 className={`engine ${engine === x ? "engine-active" : ""}`}
               >
                 <span>{x}</span>

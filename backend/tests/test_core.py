@@ -1068,6 +1068,38 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
     connection.close()
 
 
+def test_cuda_probe_summarises_the_visible_devices(monkeypatch):
+    import subprocess
+
+    from app.services import commands
+
+    monkeypatch.setattr(commands, "resolve_command", lambda name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        commands.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, "NVIDIA RTX A4500\nNVIDIA RTX A4500\n", ""
+        ),
+    )
+
+    probe = commands.probe_cuda()
+
+    assert probe["available"] is True
+    assert probe["version"] == "NVIDIA RTX A4500 x2"
+
+
+def test_cuda_probe_reports_unavailable_without_nvidia_smi(monkeypatch):
+    from app.services import commands
+
+    monkeypatch.setattr(commands, "resolve_command", lambda name: None)
+
+    probe = commands.probe_cuda()
+
+    assert probe["available"] is False
+    assert probe["version"] is None
+    assert "nvidia-smi" in probe["error"]
+
+
 def test_eta_times_the_running_job_and_queues_the_rest_behind_it():
     from datetime import UTC, datetime, timedelta
 

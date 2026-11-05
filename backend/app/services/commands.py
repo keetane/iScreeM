@@ -84,6 +84,57 @@ def probe_tool(command: str, probes: tuple[tuple[str, ...], ...] = (("--version"
     return {"name": command, "available": False, "path": executable, "version": None, "error": last_error}
 
 
+def probe_cuda():
+    """Report the CUDA devices gnina would pick up, via nvidia-smi.
+
+    gnina uses the GPU automatically whenever one is present, so this only
+    tells the UI which engine is worth defaulting to: gnina on CPU is an
+    order of magnitude slower than smina.
+    """
+    executable = resolve_command("nvidia-smi")
+    if not executable:
+        return {
+            "name": "cuda",
+            "available": False,
+            "path": None,
+            "version": None,
+            "error": "nvidia-smi not found; no CUDA device is visible",
+        }
+    try:
+        done = subprocess.run(
+            [executable, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:  # tool boundary: retain actionable probe error
+        return {
+            "name": "cuda",
+            "available": False,
+            "path": executable,
+            "version": None,
+            "error": str(exc),
+        }
+    names = [line.strip() for line in done.stdout.splitlines() if line.strip()]
+    if done.returncode != 0 or not names:
+        return {
+            "name": "cuda",
+            "available": False,
+            "path": executable,
+            "version": None,
+            "error": (done.stderr or "nvidia-smi reported no device").strip()[:300],
+        }
+    summary = names[0] if len(names) == 1 else f"{names[0]} x{len(names)}"
+    return {
+        "name": "cuda",
+        "available": True,
+        "path": executable,
+        "version": summary[:300],
+        "error": None,
+    }
+
+
 def all_tools():
     import importlib.util
 
@@ -108,6 +159,7 @@ def all_tools():
         "plip": probe_tool("plip"),
         "meeko_receptor": probe_tool("mk_prepare_receptor.py"),
         "pymol": probe_tool("pymol"),
+        "cuda": probe_cuda(),
     }
     for name, module in (
         ("rdkit", "rdkit"),
