@@ -39,6 +39,7 @@ from .services.docking import local_only_input_error
 from .services.docking_result_pages import (
     index_job_csv,
     open_results_index,
+    prune_indexed_jobs,
     query_result_page,
     query_selected_results,
     sync_hidden_jobs,
@@ -1111,11 +1112,13 @@ def _open_synced_docking_results_index(project_id: str, db: Session):
             .where(DockingJob.project_id == project_id, DockingJob.kind == "DOCKING")
             .order_by(DockingJob.created_at.desc())
         )
+        indexable: set[str] = set()
         for job in jobs:
             root = _docking_root(project_id, job.id)
             csv_path = root / "scores.csv"
             if not csv_path.is_file():
                 continue
+            indexable.add(job.id)
             protein_id = (job.parameters or {}).get("protein_id")
             receptor = proteins.get(protein_id)
             index_job_csv(
@@ -1135,6 +1138,7 @@ def _open_synced_docking_results_index(project_id: str, db: Session):
                 ligand_names=ligand_names,
                 ligand_smiles=ligand_smiles,
             )
+        prune_indexed_jobs(connection, indexable)
         sync_hidden_ligands(connection, _hidden_result_ligands(project_id))
         sync_hidden_jobs(connection, _hidden_result_jobs(project_id))
         return connection

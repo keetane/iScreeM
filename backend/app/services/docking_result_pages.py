@@ -170,6 +170,32 @@ def index_job_csv(
     connection.commit()
 
 
+def prune_indexed_jobs(connection: sqlite3.Connection, keep: set[str]) -> int:
+    """Drop cached rows for jobs that no longer have a scores.csv to index.
+
+    index_job_csv() only refreshes a job whose CSV changed, so deleting a job
+    used to leave its poses in the index forever. They kept showing in the
+    result table even though no job row existed to hide them from the UI.
+    """
+    connection.execute("DROP TABLE IF EXISTS temp.live_jobs")
+    connection.execute("CREATE TEMP TABLE live_jobs (job_id TEXT PRIMARY KEY)")
+    try:
+        connection.executemany(
+            "INSERT OR IGNORE INTO live_jobs(job_id) VALUES (?)",
+            ((job_id,) for job_id in keep),
+        )
+        removed = connection.execute(
+            "DELETE FROM indexed_jobs WHERE job_id NOT IN (SELECT job_id FROM live_jobs)"
+        ).rowcount
+        connection.execute(
+            "DELETE FROM results WHERE job_id NOT IN (SELECT job_id FROM live_jobs)"
+        )
+        connection.commit()
+        return removed
+    finally:
+        connection.execute("DROP TABLE IF EXISTS temp.live_jobs")
+
+
 def sync_hidden_ligands(connection: sqlite3.Connection, hidden: set[str]) -> None:
     connection.execute("DELETE FROM hidden_ligands")
     values = []

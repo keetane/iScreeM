@@ -1068,6 +1068,67 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
     connection.close()
 
 
+def test_pruning_drops_results_for_a_job_that_no_longer_exists(tmp_path: Path):
+    import csv
+
+    from app.services.docking_result_pages import (
+        index_job_csv,
+        open_results_index,
+        prune_indexed_jobs,
+        query_result_page,
+    )
+
+    def write_job(job_id: str) -> Path:
+        job_root = tmp_path / job_id
+        (job_root / "ligand").mkdir(parents=True)
+        (job_root / "ligand" / "docked.sdf").write_text("pose\n$$$$\n")
+        csv_path = job_root / "scores.csv"
+        with csv_path.open("w", newline="") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=["rank", "ligand_code", "ligand_name", "smiles", "pose", "affinity"],
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "rank": 1,
+                    "ligand_code": "ligand",
+                    "ligand_name": "Ligand",
+                    "smiles": "C",
+                    "pose": 1,
+                    "affinity": -7.0,
+                }
+            )
+        return csv_path
+
+    connection = open_results_index(tmp_path / "results.sqlite")
+    for job_id in ("kept", "deleted"):
+        index_job_csv(
+            connection,
+            job={
+                "job_id": job_id,
+                "job_name": job_id,
+                "engine": "gnina",
+                "created_at": "2026-11-05T00:00:00+00:00",
+                "protein_id": "protein-1",
+                "receptor_name": "Receptor 1",
+            },
+            csv_path=write_job(job_id),
+            job_root=tmp_path / job_id,
+            ligand_names={},
+            ligand_smiles={},
+        )
+    assert query_result_page(connection, page=1, sort_key="rank", direction="asc")["total"] == 2
+
+    # The caller passes the jobs that still have a scores.csv to index.
+    assert prune_indexed_jobs(connection, {"kept"}) == 1
+
+    page = query_result_page(connection, page=1, sort_key="rank", direction="asc")
+    assert page["total"] == 1
+    assert page["items"][0]["job_id"] == "kept"
+    connection.close()
+
+
 def test_cif_parser():
     stats = parse_structure(Path(__file__).parent / "fixtures" / "minimal_alanine.cif")
     assert stats["format"] == "cif"
