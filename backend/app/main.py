@@ -55,6 +55,7 @@ from .services.pdb import (
     residue_coordinates,
     restore_hetero_connectivity,
     select_docking_receptor_source,
+    structure_ligand_smiles,
     write_structure_without_residues,
 )
 from .services.pocket_volume import (
@@ -343,6 +344,43 @@ def protein_file(protein_id: str, db: Session = Depends(get_db)):
         "chemical/x-cif" if source.suffix.lower() in {".cif", ".mmcif"} else "chemical/x-pdb"
     )
     return FileResponse(source, media_type=media_type, filename=source.name)
+
+
+@app.get("/api/proteins/{protein_id}/ligand-smiles")
+def protein_ligand_smiles(
+    protein_id: str,
+    name: str = Query(min_length=1, max_length=16),
+    chain: str = Query(default="_", min_length=1, max_length=16),
+    residue_number: str = Query(min_length=1, max_length=32),
+    db: Session = Depends(get_db),
+):
+    protein = db.get(Protein, protein_id)
+    if not protein:
+        raise HTTPException(404, "Protein not found")
+    source = resolve_data_path(protein.original_path)
+    if source is None or not source.is_file():
+        raise HTTPException(404, "Original protein structure file is missing")
+    available = {
+        (
+            str(item.get("name") or "").upper(),
+            str(item.get("chain") or "_").upper(),
+            str(item.get("residue_number") or "").upper(),
+        )
+        for item in (protein.stats or {}).get("hetero_molecules", [])
+    }
+    requested = (name.upper(), (chain or "_").upper(), residue_number.upper())
+    if requested not in available:
+        raise HTTPException(404, "Structure ligand not found")
+    try:
+        smiles = structure_ligand_smiles(
+            source,
+            name=name,
+            chain=chain,
+            residue_number=residue_number,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"smiles": smiles}
 
 
 @app.post("/api/projects/{project_id}/proteins/{protein_id}/residues/delete")

@@ -16,6 +16,7 @@ import {
   Boxes,
   ChevronRight,
   CircleDotDashed,
+  Copy,
   Database,
   Download,
   ExternalLink,
@@ -91,6 +92,22 @@ const pocketColorForRank = (rank: number) =>
   pocketColors[Math.max(0, rank - 1) % pocketColors.length];
 const structureLigandKey = (ligand: StructureLigand) =>
   `${ligand.chain || "*"}:${ligand.residue_number || "*"}:${ligand.name}`;
+const copyTextToClipboard = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand("copy");
+    input.remove();
+    return copied;
+  }
+};
 type ViewerFocusRequest =
   | { kind: "grid"; grid: Grid; nonce: number }
   | { kind: "ligand"; ligand: StructureLigand; nonce: number }
@@ -644,6 +661,29 @@ export default function App() {
                       nonce: Date.now(),
                     });
                   }}
+                  onCopyLigandSmiles={async (owner, ligand) => {
+                    try {
+                      const { smiles } = await api.structureLigandSmiles(
+                        owner.id,
+                        ligand,
+                      );
+                      const copied = await copyTextToClipboard(smiles);
+                      setNotice({
+                        type: copied ? "info" : "error",
+                        text: copied
+                          ? `Copied SMILES for ${ligand.name}.`
+                          : `Could not copy SMILES for ${ligand.name}.`,
+                      });
+                    } catch (error) {
+                      setNotice({
+                        type: "error",
+                        text:
+                          error instanceof Error
+                            ? error.message
+                            : String(error),
+                      });
+                    }
+                  }}
                 />
               )}
             </div>
@@ -773,6 +813,7 @@ function ObjectTree({
   setVisibleStructureLigands,
   onFocusGrid,
   onFocusLigand,
+  onCopyLigandSmiles,
 }: {
   project: Project;
   selectedProteinId?: string;
@@ -783,6 +824,10 @@ function ObjectTree({
   setVisibleStructureLigands: (x: Set<string>) => void;
   onFocusGrid: (grid: Grid) => void;
   onFocusLigand: (
+    protein: Project["proteins"][number],
+    ligand: StructureLigand,
+  ) => void;
+  onCopyLigandSmiles: (
     protein: Project["proteins"][number],
     ligand: StructureLigand,
   ) => void;
@@ -803,6 +848,7 @@ function ObjectTree({
             setVisibleStructureLigands={setVisibleStructureLigands}
             onFocusGrid={onFocusGrid}
             onFocusLigand={onFocusLigand}
+            onCopyLigandSmiles={onCopyLigandSmiles}
           />
         ))}
       </TreeGroup>
@@ -820,6 +866,7 @@ function ReceptorTreeItem({
   setVisibleStructureLigands,
   onFocusGrid,
   onFocusLigand,
+  onCopyLigandSmiles,
 }: {
   project: Project;
   protein: Project["proteins"][number];
@@ -831,6 +878,10 @@ function ReceptorTreeItem({
   setVisibleStructureLigands: (x: Set<string>) => void;
   onFocusGrid: (grid: Grid) => void;
   onFocusLigand: (
+    protein: Project["proteins"][number],
+    ligand: StructureLigand,
+  ) => void;
+  onCopyLigandSmiles: (
     protein: Project["proteins"][number],
     ligand: StructureLigand,
   ) => void;
@@ -909,6 +960,14 @@ function ReceptorTreeItem({
                     }}
                   >
                     <Focus />
+                  </button>
+                  <button
+                    className="icon-btn h-6 w-6 shrink-0"
+                    title={`Copy SMILES for ${ligand.name}`}
+                    aria-label={`Copy SMILES for ${ligand.name}`}
+                    onClick={() => void onCopyLigandSmiles(protein, ligand)}
+                  >
+                    <Copy />
                   </button>
                 </div>
               );

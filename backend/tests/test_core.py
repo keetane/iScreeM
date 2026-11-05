@@ -33,6 +33,7 @@ from app.services.pdb import (
     receptor_atom_coordinates,
     restore_hetero_connectivity,
     select_docking_receptor_source,
+    structure_ligand_smiles,
     write_autobox_ligand,
     write_docking_receptor,
     write_receptor_without_hetatm,
@@ -49,12 +50,12 @@ from app.services.protein_prep import (
     _missing_residue_report,
     _record_added_residue_numbers,
 )
+from app.services.pubchem import resolve_ligand_queries
 from app.services.score_parser import (
     combine_scores,
     parse_docking_scores,
     scores_from_sdf,
 )
-from app.services.pubchem import resolve_ligand_queries
 from app.services.sdf import split_sdf_records
 from app.services.sdf_export import append_sdf_properties
 from app.services.storage_names import (
@@ -661,6 +662,23 @@ def test_infer_organic_hetero_bond_orders_writes_double_bonds(tmp_path: Path):
     assert "CONECT    1    2    2    3" in contents
     assert "CONECT    2    1    1" in contents
     assert infer_organic_hetero_bond_orders(pdb) == 0
+
+
+def test_structure_ligand_smiles_preserves_pdb_conect_bond_orders(tmp_path: Path):
+    pytest.importorskip("rdkit")
+    pdb = tmp_path / "ligand.pdb"
+    pdb.write_text(
+        "HETATM    1  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00           C  \n"
+        "HETATM    2  O1  LIG A   1       1.230   0.000   0.000  1.00  0.00           O  \n"
+        "HETATM    3  C2  LIG A   1      -1.500   0.000   0.000  1.00  0.00           C  \n"
+        "CONECT    1    2    2    3\n"
+        "CONECT    2    1    1\n"
+        "CONECT    3    1\nEND\n"
+    )
+
+    assert structure_ligand_smiles(
+        pdb, name="LIG", chain="A", residue_number="1"
+    ) == "CC=O"
 
 
 def test_docking_receptor_keeps_only_interacting_waters(tmp_path: Path):

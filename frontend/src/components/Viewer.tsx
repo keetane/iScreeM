@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, Focus, RotateCcw, Layers3 } from "lucide-react";
 import type { Grid, Pocket, Protein, StructureLigand } from "../types";
+import { AXIS_COLORS } from "../axisColors";
 
 type Props = {
   protein?: Protein;
@@ -121,6 +122,79 @@ const repairedResidueKeys = (protein?: Protein) => {
   });
 };
 
+type ViewQuaternion = { x: number; y: number; z: number; w: number };
+
+const rotateAxis = (
+  vector: { x: number; y: number; z: number },
+  quaternion: ViewQuaternion,
+) => {
+  const { x, y, z, w } = quaternion,
+    ix = w * vector.x + y * vector.z - z * vector.y,
+    iy = w * vector.y + z * vector.x - x * vector.z,
+    iz = w * vector.z + x * vector.y - y * vector.x,
+    iw = -x * vector.x - y * vector.y - z * vector.z;
+  return {
+    x: ix * w + iw * -x + iy * -z - iz * -y,
+    y: iy * w + iw * -y + iz * -x - ix * -z,
+    z: iz * w + iw * -z + ix * -y - iy * -x,
+  };
+};
+
+function OrientationAxes({ quaternion }: { quaternion: ViewQuaternion }) {
+  const origin = 40,
+    length = 25,
+    axes = [
+      { name: "X", key: "x" as const, vector: { x: 1, y: 0, z: 0 } },
+      { name: "Y", key: "y" as const, vector: { x: 0, y: 1, z: 0 } },
+      { name: "Z", key: "z" as const, vector: { x: 0, y: 0, z: 1 } },
+    ]
+      .map((axis) => ({ ...axis, rotated: rotateAxis(axis.vector, quaternion) }))
+      .sort((left, right) => left.rotated.z - right.rotated.z);
+  return (
+    <div
+      className="pointer-events-none absolute left-3 top-3 z-10 rounded-lg border border-line bg-panel/80 p-1 backdrop-blur"
+      role="img"
+      aria-label="Viewer orientation axes"
+    >
+      <svg width="80" height="80" viewBox="0 0 80 80" aria-hidden="true">
+        {axes.map(({ name, key, rotated }) => {
+          const endX = origin + rotated.x * length,
+            endY = origin - rotated.y * length,
+            projectedLength = Math.hypot(rotated.x, rotated.y),
+            labelX =
+              endX + (projectedLength < 0.15 ? (rotated.z >= 0 ? 8 : -8) : 0),
+            labelY = endY - 4;
+          return (
+            <g key={key} opacity={rotated.z < -0.2 ? 0.58 : 1}>
+              <line
+                x1={origin}
+                y1={origin}
+                x2={endX}
+                y2={endY}
+                stroke={AXIS_COLORS[key]}
+                strokeWidth="3"
+                strokeLinecap="round"
+              />
+              <circle cx={endX} cy={endY} r="3" fill={AXIS_COLORS[key]} />
+              <text
+                x={labelX}
+                y={labelY}
+                fill={AXIS_COLORS[key]}
+                fontSize="11"
+                fontWeight="700"
+                textAnchor="middle"
+              >
+                {name}
+              </text>
+            </g>
+          );
+        })}
+        <circle cx={origin} cy={origin} r="2.5" fill="#cbd5e1" />
+      </svg>
+    </div>
+  );
+}
+
 export function Viewer({
   protein,
   grid,
@@ -154,7 +228,13 @@ export function Viewer({
     [stickResidueName, setStickResidueName] = useState<string>();
   const [viewerReady, setViewerReady] = useState(false),
     [modelVersion, setModelVersion] = useState(0),
-    [poseVersion, setPoseVersion] = useState(0);
+    [poseVersion, setPoseVersion] = useState(0),
+    [viewQuaternion, setViewQuaternion] = useState<ViewQuaternion>({
+      x: 0,
+      y: 0,
+      z: 0,
+      w: 1,
+    });
 
   useEffect(() => {
     onSelectResidueRef.current = onSelectResidue;
@@ -194,12 +274,16 @@ export function Viewer({
         backgroundColor: "#07111f",
         antialias: true,
       });
+      viewer.current.setViewChangeCallback((view: number[]) => {
+        setViewQuaternion({ x: view[4], y: view[5], z: view[6], w: view[7] });
+      });
       viewer.current.render();
       setViewerReady(true);
     });
     return () => {
       alive = false;
       surfaceGeneration.current += 1;
+      viewer.current?.setViewChangeCallback(null);
     };
   }, []);
   useEffect(() => {
@@ -571,13 +655,16 @@ export function Viewer({
     if (!viewer.current || !model.current) return;
     const generation = ++surfaceGeneration.current;
     const proteinSelection = { hetflag: false };
+    const cartoonOpacity = 0.7;
     const surfaceColorProperty = "__iscreem_surface_color";
     model.current.setStyle({}, {});
     viewer.current.removeAllSurfaces?.();
     const activePockets = pockets.filter((p) => visiblePockets.has(p.id));
-    model.current.setStyle(proteinSelection, { cartoon: { color: "#8ccbd4" } });
+    model.current.setStyle(proteinSelection, {
+      cartoon: { color: "#8ccbd4", opacity: cartoonOpacity },
+    });
     model.current.setStyle(modifiedProteinResidues, {
-      cartoon: { color: "#8ccbd4" },
+      cartoon: { color: "#8ccbd4", opacity: cartoonOpacity },
     });
     activePockets.forEach((p) => {
       const color = pocketColorForRank(p.rank);
@@ -586,7 +673,7 @@ export function Viewer({
         .filter(Boolean)
         .forEach((selection) =>
           model.current.setStyle(selection, {
-            cartoon: { color },
+            cartoon: { color, opacity: cartoonOpacity },
             line: { color, linewidth: 1 },
           }),
         );
@@ -608,12 +695,12 @@ export function Viewer({
           }),
         );
     model.current.setStyle(modifiedProteinResidues, {
-      cartoon: { color: "#8ccbd4" },
+      cartoon: { color: "#8ccbd4", opacity: cartoonOpacity },
     });
     repairedResidueKeys(protein).forEach((key) =>
       model.current.setStyle(
         residueSelector(key),
-        { cartoon: { color: "#6b7280" } },
+        { cartoon: { color: "#6b7280", opacity: cartoonOpacity } },
         true,
       ),
     );
@@ -642,7 +729,7 @@ export function Viewer({
         model.current.setStyle(
           selection,
           {
-            cartoon: { color: "#ffffff" },
+            cartoon: { color: "#ffffff", opacity: cartoonOpacity },
             line: { color: "#ffffff", linewidth: 1 },
           },
           true,
@@ -798,12 +885,11 @@ export function Viewer({
         { x: max.x, y: max.y, z: max.z },
         { x: min.x, y: max.y, z: max.z },
       ];
-      v.addBox({
-        center: c,
-        dimensions: { w: s.x, h: s.y, d: s.z },
-        color: gridColor,
-        opacity: 0.08,
-      });
+      // Do not add a translucent box here. 3Dmol GLShape materials write
+      // transparent geometry into the depth buffer. A one-sided box appears
+      // acceptable while viewed from outside, but when the camera enters the
+      // grid its face orientation reverses and cartoons beyond it are clipped.
+      // The edge frame below remains visible and depth-safe from either side.
       const edges = [
         [0, 1],
         [1, 2],
@@ -885,6 +971,7 @@ export function Viewer({
           </div>
         </div>
       )}
+      <OrientationAxes quaternion={viewQuaternion} />
       <div className="absolute right-3 top-3 flex gap-1 rounded-lg border border-line bg-panel/90 p-1 backdrop-blur">
         <button
           className="icon-btn"

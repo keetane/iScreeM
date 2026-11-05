@@ -1,6 +1,7 @@
 from collections import defaultdict
 from math import dist
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 METALS = {"LI", "NA", "K", "MG", "CA", "MN", "FE", "CO", "NI", "CU", "ZN", "CD", "HG"}
 WATERS = {"HOH", "WAT", "DOD"}
@@ -624,6 +625,164 @@ def write_autobox_ligand(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text("".join([*selected, "END\n"]))
     return coordinates
+
+
+def structure_ligand_smiles(
+    source: Path,
+    *,
+    name: str,
+    chain: str,
+    residue_number: str,
+) -> str:
+    """Return a best-effort canonical SMILES for one structure HETATM residue.
+
+    Legacy PDB files can encode bond order by repeating targets in CONECT
+    records. Preserve those records when available; otherwise RDKit falls back
+    to connectivity and valence inference from the selected 3D residue.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDetermineBonds
+    except ImportError as exc:
+        raise ValueError("Copying structure-ligand SMILES requires RDKit") from exc
+
+    if source.suffix.lower() in {".cif", ".mmcif"}:
+        try:
+            import gemmi
+
+            block = gemmi.cif.read_file(str(source)).sole_block()
+            atom_table = block.find_mmcif_category("_chem_comp_atom.")
+            bond_table = block.find_mmcif_category("_chem_comp_bond.")
+            molecule = Chem.RWMol()
+            atom_ids: dict[str, int] = {}
+            for row in atom_table:
+                if row["comp_id"].upper() != name.upper():
+                    continue
+                atom_ids[row["atom_id"]] = molecule.AddAtom(
+                    Chem.Atom(row["type_symbol"])
+                )
+            bond_types = {
+                "sing": Chem.BondType.SINGLE,
+                "doub": Chem.BondType.DOUBLE,
+                "trip": Chem.BondType.TRIPLE,
+                "arom": Chem.BondType.AROMATIC,
+            }
+            for row in bond_table:
+                if row["comp_id"].upper() != name.upper():
+                    continue
+                first = atom_ids.get(row["atom_id_1"])
+                second = atom_ids.get(row["atom_id_2"])
+                if first is None or second is None:
+                    continue
+                molecule.AddBond(
+                    first,
+                    second,
+                    bond_types.get(row["value_order"].lower(), Chem.BondType.SINGLE),
+                )
+            if atom_ids and molecule.GetNumBonds():
+                component = molecule.GetMol()
+                Chem.SanitizeMol(component)
+                component = Chem.RemoveHs(component)
+                smiles = Chem.MolToSmiles(
+                    component, canonical=True, isomericSmiles=True
+                ).strip()
+                if smiles:
+                    return smiles
+        except (ImportError, KeyError, OSError, RuntimeError, ValueError):
+            # Some structure CIFs omit the chemical-component dictionaries.
+            # The coordinate-based fallback below still handles those files.
+            pass
+
+    with TemporaryDirectory(prefix="iscreem-ligand-smiles-") as temporary:
+        ligand_path = Path(temporary) / "ligand.pdb"
+        write_autobox_ligand(
+            source,
+            ligand_path,
+            name=name,
+            chain=chain,
+            residue_number=residue_number,
+        )
+        ligand_lines = ligand_path.read_text(errors="replace").splitlines()
+        serials = {
+            int(line[6:11])
+            for line in ligand_lines
+            if line[:6].strip().upper() == "HETATM"
+            and line[6:11].strip().isdigit()
+        }
+        connectivity: list[str] = []
+        if source.suffix.lower() not in {".cif", ".mmcif"}:
+            for line in source.read_text(errors="replace").splitlines():
+                if line[:6].strip().upper() != "CONECT":
+                    continue
+                fields = [
+                    line[index : index + 5].strip()
+                    for index in range(6, len(line), 5)
+                ]
+                if not fields or not fields[0].isdigit():
+                    continue
+                source_serial = int(fields[0])
+                if source_serial not in serials:
+                    continue
+                targets = [
+                    int(field)
+                    for field in fields[1:]
+                    if field.isdigit() and int(field) in serials
+                ]
+                if targets:
+                    connectivity.append(
+                        f"CONECT{source_serial:5d}"
+                        f"{''.join(f'{target:5d}' for target in targets)}"
+                    )
+        ligand_path.write_text(
+            "\n".join(
+                [
+                    *(line for line in ligand_lines if line.strip() != "END"),
+                    *connectivity,
+                    "END",
+                ]
+            )
+            + "\n"
+        )
+        base = Chem.MolFromPDBFile(
+            str(ligand_path),
+            sanitize=False,
+            removeHs=False,
+            proximityBonding=not connectivity,
+        )
+        if base is None or base.GetNumAtoms() == 0:
+            raise ValueError(f"Could not read ligand {name} {chain}:{residue_number}")
+        for atom in base.GetAtoms():
+            atom.SetNoImplicit(False)
+
+        candidates = [Chem.Mol(base)]
+        if not connectivity:
+            candidates = []
+            for charge in (0, -1, 1, -2, 2, -3, 3, -4, 4):
+                candidate = Chem.Mol(base)
+                try:
+                    rdDetermineBonds.DetermineBondOrders(
+                        candidate,
+                        charge=charge,
+                        allowChargedFragments=False,
+                    )
+                except (ValueError, RuntimeError):
+                    continue
+                candidates.append(candidate)
+        for molecule in candidates:
+            try:
+                Chem.SanitizeMol(molecule)
+                molecule = Chem.RemoveHs(molecule)
+                Chem.AssignStereochemistryFrom3D(molecule)
+                smiles = Chem.MolToSmiles(
+                    molecule, canonical=True, isomericSmiles=True
+                ).strip()
+            except (ValueError, RuntimeError):
+                continue
+            if smiles:
+                return smiles
+    raise ValueError(
+        f"Could not determine SMILES for ligand {name} {chain}:{residue_number}"
+    )
 
 
 def residue_coordinates(path: Path, residues: list[str]) -> list[list[float]]:

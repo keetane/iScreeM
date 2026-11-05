@@ -32,6 +32,19 @@ export const api = {
     request(`/api/projects/${projectId}/proteins/${proteinId}`, {
       method: "DELETE",
     }),
+  structureLigandSmiles: (
+    proteinId: string,
+    ligand: import("./types").StructureLigand,
+  ) => {
+    const query = new URLSearchParams({
+      name: ligand.name,
+      chain: ligand.chain || "_",
+      residue_number: ligand.residue_number || "",
+    });
+    return request<{ smiles: string }>(
+      `/api/proteins/${proteinId}/ligand-smiles?${query}`,
+    );
+  },
   deleteProteinResidues: (
     projectId: string,
     proteinId: string,
