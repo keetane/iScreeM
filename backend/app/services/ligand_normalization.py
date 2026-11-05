@@ -35,6 +35,35 @@ def canonical_smiles(molecule) -> str:
     return Chem.MolToSmiles(normalize_molecule(molecule), canonical=True, isomericSmiles=True)
 
 
+def strip_salts(molecule):
+    """Reduce a multi-component input to the component that gets docked.
+
+    Catalogue libraries are full of salts and co-formers. smina and gnina dock
+    the largest fragment and drop the rest from their output, so leaving the
+    counter-ions in the input wastes the embedding and then makes the docked
+    pose fail its heavy-atom comparison against the template.
+
+    Returns (parent, removed_smiles). `removed_smiles` is empty when the input
+    was already a single component.
+    """
+    Chem, _, rdMolStandardize = _rdkit()
+    fragments = Chem.GetMolFrags(molecule, asMols=True, sanitizeFrags=False)
+    if len(fragments) < 2:
+        return molecule, ""
+    parent = rdMolStandardize.LargestFragmentChooser().choose(molecule)
+    kept = Chem.MolToSmiles(parent, canonical=True, isomericSmiles=True)
+    removed = [
+        smiles
+        for fragment in fragments
+        if (smiles := Chem.MolToSmiles(fragment, canonical=True, isomericSmiles=True)) != kept
+    ]
+    # An exact duplicate of the parent leaves nothing to report but still has
+    # to be dropped, so fall back to the component count.
+    if not removed:
+        removed = [kept] * (len(fragments) - 1)
+    return parent, ".".join(removed)
+
+
 def _has_3d_coordinates(molecule) -> bool:
     if molecule.GetNumConformers() == 0:
         return False
@@ -53,15 +82,22 @@ def prepare_3d_molecule(
     force_field: str = "MMFF94s",
     preserve_existing_3d: bool = False,
     relax: bool = True,
+    desalt: bool = True,
 ):
     """Create a sanitized, normalized and validated explicit-H 3D ligand.
 
     `relax=False` keeps a supplied conformer exactly as it is. Relaxing in
     vacuum moves a docked or template-aligned pose by roughly 2 A, which
     destroys the alignment that constrained embedding set up.
+
+    `desalt=False` keeps every component. The default drops counter-ions and
+    co-formers, because the engines dock the largest fragment only.
     """
     Chem, AllChem, _ = _rdkit()
     normalized = normalize_molecule(molecule)
+    removed_salts = ""
+    if desalt:
+        normalized, removed_salts = strip_salts(normalized)
     smiles = Chem.MolToSmiles(normalized, canonical=True, isomericSmiles=True)
     prepared = Chem.AddHs(normalized, addCoords=True)
     kept_pose = preserve_existing_3d and _has_3d_coordinates(prepared)
@@ -91,6 +127,8 @@ def prepare_3d_molecule(
     prepared.SetProp("_Name", name)
     prepared.SetProp("IDOCK_CANONICAL_SMILES", smiles)
     prepared.SetProp("IDOCK_PREPARATION", preparation)
+    if removed_salts:
+        prepared.SetProp("IDOCK_SALT_REMOVED", removed_salts)
     return prepared, smiles
 
 
@@ -141,17 +179,23 @@ def normalize_prepared_sdf(
         relax=relax,
     )
     if expected_smiles:
-        expected = canonical_smiles(Chem.MolFromSmiles(expected_smiles))
+        # The registered SMILES may still carry the salt the preparation just
+        # dropped, so compare the docked components on both sides.
+        expected_parent, _ = strip_salts(normalize_molecule(Chem.MolFromSmiles(expected_smiles)))
+        expected = Chem.MolToSmiles(expected_parent, canonical=True, isomericSmiles=True)
         if smiles != expected:
             raise ValueError(f"Prepared ligand does not match its registered SMILES: {name}")
     write_validated_sdf(prepared, destination)
-    return {
+    report = {
         "canonical_smiles": smiles,
         "formal_charge": Chem.GetFormalCharge(prepared),
         "atom_count": prepared.GetNumAtoms(),
         "heavy_atom_count": prepared.GetNumHeavyAtoms(),
         "input_validated": True,
     }
+    if prepared.HasProp("IDOCK_SALT_REMOVED"):
+        report["salt_removed"] = prepared.GetProp("IDOCK_SALT_REMOVED")
+    return report
 
 
 def normalize_docked_sdf(raw_output: Path, template_sdf: Path, destination: Path) -> dict:
@@ -161,7 +205,9 @@ def normalize_docked_sdf(raw_output: Path, template_sdf: Path, destination: Path
         (mol for mol in Chem.SDMolSupplier(str(template_sdf), removeHs=False) if mol is not None),
         None,
     )
-    template = normalize_molecule(template_with_h)
+    # Templates prepared before desalting still carry their counter-ions, and
+    # the engine never returns those. Compare against what was actually docked.
+    template, removed_salts = strip_salts(normalize_molecule(template_with_h))
     parameters = Chem.AdjustQueryParameters()
     parameters.makeBondsGeneric = True
     query = Chem.AdjustQueryProperties(template, parameters)
@@ -181,10 +227,16 @@ def normalize_docked_sdf(raw_output: Path, template_sdf: Path, destination: Path
             # hydrogens.  Compare heavy-atom graphs so an otherwise valid pose
             # is not rejected merely because the engine kept an N-H or O-H.
             raw_heavy = Chem.RemoveHs(raw, sanitize=False)
+            # RemoveHs keeps a hydrogen that defines double-bond stereo, so an
+            # amidine or guanidine =N-H survives it. Count the heavy atoms
+            # rather than trusting the atom count of the stripped molecule.
+            heavy_atom_count = sum(
+                1 for atom in raw_heavy.GetAtoms() if atom.GetAtomicNum() > 1
+            )
             match = raw_heavy.GetSubstructMatch(query)
             if (
                 len(match) != template.GetNumAtoms()
-                or raw_heavy.GetNumAtoms() != template.GetNumAtoms()
+                or heavy_atom_count != template.GetNumAtoms()
             ):
                 raise ValueError(
                     f"Docking pose {pose} does not match the prepared ligand heavy-atom graph"
@@ -211,9 +263,12 @@ def normalize_docked_sdf(raw_output: Path, template_sdf: Path, destination: Path
         temporary.unlink(missing_ok=True)
         raise ValueError("Normalized docking SDF failed RDKit validation")
     temporary.replace(destination)
-    return {
+    report = {
         "pose_count": len(validated),
         "canonical_smiles": Chem.MolToSmiles(template, canonical=True, isomericSmiles=True),
         "formal_charge": Chem.GetFormalCharge(template),
         "output_validated": True,
     }
+    if removed_salts:
+        report["salt_removed"] = removed_salts
+    return report

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .ligand_normalization import normalize_molecule
+from .ligand_normalization import normalize_molecule, strip_salts
 
 MIN_TEMPLATE_CORE_ATOMS = 8
 MCS_TIMEOUT_SECONDS = 30
@@ -67,7 +67,9 @@ def template_pose(
     Chem, AllChem, _ = _rdkit()
     from rdkit.Geometry import Point3D
 
-    normalized = normalize_molecule(molecule)
+    # Counter-ions have no core in common with the template and the engine
+    # would drop them anyway, so dock the parent as every other path does.
+    normalized, _ = strip_salts(normalize_molecule(molecule))
     smiles = Chem.MolToSmiles(normalized, canonical=True, isomericSmiles=True)
 
     result = _shared_core(template, normalized, timeout)

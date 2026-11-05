@@ -493,6 +493,142 @@ def test_pre_docking_preparation_normalizes_problem_ligands(tmp_path: Path, smil
     assert loaded.GetNumConformers() == 1 and loaded.GetConformer().Is3D()
 
 
+def test_preparation_drops_the_counter_ion_and_records_it(tmp_path: Path):
+    """Catalogue entries arrive as salts; only the parent is ever docked."""
+    Chem = pytest.importorskip("rdkit.Chem")
+
+    salt = "Cc1ccc(C(=O)O)cc1.Cl"
+    prepared, canonical = prepare_3d_molecule(
+        Chem.MolFromSmiles(salt), name="salt", seed=61453
+    )
+
+    assert canonical == "Cc1ccc(C(=O)O)cc1"
+    assert prepared.GetProp("IDOCK_SALT_REMOVED") == "Cl"
+    assert len(Chem.GetMolFrags(Chem.RemoveHs(prepared))) == 1
+
+    # A single-component ligand is untouched and carries no salt annotation.
+    plain, _ = prepare_3d_molecule(
+        Chem.MolFromSmiles("Cc1ccc(C(=O)O)cc1"), name="plain", seed=61453
+    )
+    assert not plain.HasProp("IDOCK_SALT_REMOVED")
+
+
+def test_docked_pose_matches_a_template_that_still_carries_its_salt(tmp_path: Path):
+    """Old prepared templates kept the counter-ion the engine never returns."""
+    pytest.importorskip("rdkit.Chem")
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from app.services.ligand_normalization import normalize_docked_sdf
+
+    salted = Chem.AddHs(Chem.MolFromSmiles("Cc1ccc(C(=O)O)cc1.Cl"))
+    AllChem.EmbedMolecule(salted, randomSeed=61453)
+    template_sdf = tmp_path / "ligand.prepared.sdf"
+    writer = Chem.SDWriter(str(template_sdf))
+    writer.write(salted)
+    writer.close()
+
+    # What the engine actually writes back: the parent, no counter-ion.
+    parent = Chem.AddHs(Chem.MolFromSmiles("Cc1ccc(C(=O)O)cc1"))
+    AllChem.EmbedMolecule(parent, randomSeed=61453)
+    raw = tmp_path / "docked.raw.sdf"
+    writer = Chem.SDWriter(str(raw))
+    writer.write(parent)
+    writer.close()
+
+    report = normalize_docked_sdf(raw, template_sdf, tmp_path / "docked.sdf")
+
+    assert report["pose_count"] == 1
+    assert report["salt_removed"] == "Cl"
+    assert report["canonical_smiles"] == "Cc1ccc(C(=O)O)cc1"
+
+
+# A real gnina pose for sulfaguanidine. The engine writes the polar hydrogens
+# explicitly, and RemoveHs then refuses to drop the three on the guanidine, so
+# the stripped molecule is not the heavy-atom graph its name suggests.
+SULFAGUANIDINE_GNINA_POSE = """Sulfaguanidine
+
+
+ 20 20  0  0  0  0  0  0  0  0999 V2000
+   59.3739   68.8350  268.6939 S   0  0  0  0  0  0  0  0  0  0  0  0
+   60.0434   67.5646  268.5168 O   0  0  0  0  0  0  0  0  0  0  0  0
+   59.1878   69.4278  270.0009 O   0  0  0  0  0  0  0  0  0  0  0  0
+   57.7868   68.7299  267.9040 C   0  0  0  0  0  0  0  0  0  0  0  0
+   57.7083   68.5332  266.5240 C   0  0  0  0  0  0  0  0  0  0  0  0
+   56.6251   68.8727  268.6649 C   0  0  0  0  0  0  0  0  0  0  0  0
+   56.4547   68.4637  265.9095 C   0  0  0  0  0  0  0  0  0  0  0  0
+   55.3785   68.7993  268.0372 C   0  0  0  0  0  0  0  0  0  0  0  0
+   55.2814   68.6099  266.6554 C   0  0  0  0  0  0  0  0  0  0  0  0
+   54.0447   68.4980  266.0478 N   0  0  0  0  0  0  0  0  0  0  0  0
+   53.9732   68.4473  265.0407 H   0  0  0  0  0  0  0  0  0  0  0  0
+   53.2012   68.6830  266.5735 H   0  0  0  0  0  0  0  0  0  0  0  0
+   60.1352   69.9860  267.7629 N   0  0  0  0  0  0  0  0  0  0  0  0
+   59.6260   70.1867  266.9112 H   0  0  0  0  0  0  0  0  0  0  0  0
+   61.2913   70.6741  268.0487 C   0  0  0  0  0  0  0  0  0  0  0  0
+   62.1150   70.3545  268.9722 N   0  0  0  0  0  0  0  0  0  0  0  0
+   61.4934   71.7381  267.2657 N   0  0  0  0  0  0  0  0  0  0  0  0
+   61.7417   69.5557  269.5051 H   0  0  0  0  0  0  0  0  0  0  0  0
+   62.3294   72.2794  267.4420 H   0  0  0  0  0  0  0  0  0  0  0  0
+   60.8920   72.0070  266.5067 H   0  0  0  0  0  0  0  0  0  0  0  0
+  4  1  1  0
+  4  5  1  0
+  4  6  2  0
+  1  2  2  0
+  1  3  2  0
+  5  7  2  0
+  6  8  1  0
+  7  9  1  0
+  8  9  2  0
+  9 10  1  0
+  1 13  1  0
+ 13 15  1  0
+ 15 16  2  0
+ 15 17  1  0
+ 10 11  1  0
+ 10 12  1  0
+ 13 14  1  0
+ 16 18  1  0
+ 17 19  1  0
+ 17 20  1  0
+M  END
+$$$$
+"""
+
+
+def test_docked_pose_accepts_a_guanidine_whose_hydrogens_survive_removehs(
+    tmp_path: Path,
+):
+    """RemoveHs leaves the polar hydrogens gnina writes on a guanidine."""
+    pytest.importorskip("rdkit.Chem")
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from app.services.ligand_normalization import normalize_docked_sdf
+
+    raw = tmp_path / "docked.raw.sdf"
+    raw.write_text(SULFAGUANIDINE_GNINA_POSE)
+
+    template = Chem.AddHs(Chem.MolFromSmiles("N=C(N)NS(=O)(=O)c1ccc(N)cc1"))
+    AllChem.EmbedMolecule(template, randomSeed=61453)
+    template_sdf = tmp_path / "ligand.prepared.sdf"
+    writer = Chem.SDWriter(str(template_sdf))
+    writer.write(template)
+    writer.close()
+
+    # Guard the premise: the stripped pose still holds hydrogens, so an atom
+    # count taken from it would not match the 14 heavy atoms of the template.
+    pose = next(iter(Chem.SDMolSupplier(str(raw), removeHs=False, sanitize=False)))
+    stripped = Chem.RemoveHs(pose, sanitize=False)
+    assert sum(1 for atom in stripped.GetAtoms() if atom.GetAtomicNum() == 1) > 0
+    assert stripped.GetNumAtoms() != 14
+
+    report = normalize_docked_sdf(raw, template_sdf, tmp_path / "docked.sdf")
+
+    assert report["pose_count"] == 1
+    docked = next(iter(Chem.SDMolSupplier(str(tmp_path / "docked.sdf"))))
+    assert docked.GetNumHeavyAtoms() == 14
+
+
 def test_unprepared_library_ligand_is_prepared_for_docking(tmp_path: Path):
     Chem = pytest.importorskip("rdkit.Chem")
     from app.workers import prepare_docking_ligand
