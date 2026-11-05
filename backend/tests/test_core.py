@@ -146,6 +146,48 @@ def test_cancel_queued_job_without_rq_id_becomes_terminal():
     assert job.status == JobStatus.CANCELLED
 
 
+def test_cancel_requested_sees_a_flag_written_by_another_session(tmp_path: Path):
+    """The worker must notice the cancel the API wrote from its own session."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db import Base
+    from app.models import DockingJob, JobStatus
+    from app.workers import _cancel_requested
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'jobs.db'}")
+    Base.metadata.create_all(engine)
+    # Mirror the application's session factory, whose expire_on_commit=False is
+    # what used to hide the cancellation from the worker.
+    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    with Session() as setup:
+        setup.add(
+            DockingJob(
+                id="job",
+                project_id="project",
+                name="Docking run",
+                kind="DOCKING",
+                status=JobStatus.RUNNING,
+                parameters={},
+            )
+        )
+        setup.commit()
+
+    worker_session = Session()
+    job = worker_session.get(DockingJob, "job")
+    assert _cancel_requested(worker_session, job) is False
+
+    with Session() as api_session:
+        api_session.get(DockingJob, "job").cancel_requested = True
+        api_session.commit()
+
+    # The worker keeps committing its own progress between ligands.
+    worker_session.commit()
+    assert _cancel_requested(worker_session, job) is True
+    worker_session.close()
+
+
 def test_docking_summaries_lists_project_score_files(tmp_path: Path, monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session

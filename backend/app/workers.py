@@ -46,6 +46,17 @@ def _finish(job: DockingJob, status: JobStatus, error: str | None = None):
     job.status, job.error, job.finished_at = status, error, datetime.now(UTC)
 
 
+def _cancel_requested(db, job: DockingJob) -> bool:
+    """Re-read the cancel flag the API writes from its own session.
+
+    Sessions are built with expire_on_commit=False, so the worker's long-lived
+    job instance keeps the value it was loaded with and would never observe a
+    cancellation. Refreshing just this column costs one SELECT per ligand.
+    """
+    db.refresh(job, ["cancel_requested"])
+    return bool(job.cancel_requested)
+
+
 def _absolute_path(value: str | Path) -> Path:
     """Resolve paths persisted by the API before changing worker cwd."""
     path = Path(value)
@@ -552,7 +563,7 @@ def run_docking(job_id: str):
     score_fields: set[str] = set()
     score_sequence = 0
     for ligand in docking_tasks():
-        if job.cancel_requested:
+        if _cancel_requested(db, job):
             _finish(job, JobStatus.CANCELLED)
             db.commit()
             break
