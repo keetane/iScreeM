@@ -98,12 +98,17 @@ def cancel_queued_job(item: DockingJob) -> None:
     if item.status != JobStatus.QUEUED:
         return
     if item.rq_job_id:
-        try:
-            queue().remove(item.rq_job_id)
-        except Exception:
-            # Redis may have forgotten a stale queue item already. The database
-            # state must still become terminal so it cannot block receptor edits.
-            pass
+        # Docking runs are enqueued on the "docking" queue and everything else
+        # on "default". Nothing records which one a row went to, so drop the id
+        # from both; removing an absent id is a no-op.
+        for queue_name in ("docking", "default"):
+            try:
+                queue(queue_name).remove(item.rq_job_id)
+            except Exception:
+                # Redis may have forgotten a stale queue item already. The
+                # database state must still become terminal so it cannot block
+                # receptor edits.
+                pass
     item.status = JobStatus.CANCELLED
 
 
