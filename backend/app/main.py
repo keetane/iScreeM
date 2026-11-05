@@ -997,6 +997,57 @@ def jobs(db: Session = Depends(get_db)):
     )
 
 
+# A rate measured from only a ligand or two is dominated by the receptor
+# preparation that runs before the first one, so hold the estimate back.
+MIN_ETA_SAMPLES = 3
+
+
+def _annotate_eta(payload: list[dict]) -> None:
+    """Attach a finishing estimate to the running job and the queue behind it.
+
+    The running job times itself: elapsed wall clock over the ligands it has
+    finished. Per-ligand cost barely varies inside one run because it follows
+    the search box and exhaustiveness rather than the compound, so the plain
+    mean lands within about a percent after a handful of ligands. Failed
+    ligands return almost immediately and make the mean slightly optimistic;
+    that is accepted rather than corrected, to keep this a single division.
+
+    A queued job has never run and has no rate of its own, so it borrows the
+    running job's. Its configuration may differ, which is why the estimate is
+    reported as "borrowed" for the UI to qualify.
+    """
+    running = next((item for item in payload if item["status"] == "RUNNING"), None)
+    rate = None
+    if running and running["started_at"] and running["completed_count"] >= MIN_ETA_SAMPLES:
+        started = running["started_at"]
+        if isinstance(started, str):
+            started = datetime.fromisoformat(started)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        elapsed = (datetime.now(UTC) - started).total_seconds()
+        rate = elapsed / running["completed_count"]
+        remaining = max(0, running["total_count"] - running["completed_count"])
+        running["seconds_per_ligand"] = rate
+        running["eta_seconds"] = rate * remaining
+        running["eta_basis"] = "measured"
+    if rate is None:
+        return
+    # The worker runs one job at a time, so a queued job waits for everything
+    # created before it, then takes its own ligands at the borrowed rate.
+    wait = running["eta_seconds"]
+    queued = sorted(
+        (item for item in payload if item["status"] == "QUEUED"),
+        key=lambda item: item["created_at"],
+    )
+    for item in queued:
+        duration = rate * item["total_count"]
+        item["seconds_per_ligand"] = rate
+        item["starts_in_seconds"] = wait
+        item["eta_seconds"] = wait + duration
+        item["eta_basis"] = "borrowed"
+        wait += duration
+
+
 def _serialize_jobs(items: list[DockingJob]) -> list[dict]:
     hidden_by_project: dict[str, set[str]] = {}
     payload = []
@@ -1012,6 +1063,7 @@ def _serialize_jobs(items: list[DockingJob]) -> list[dict]:
             values["result_available"] = available
             values["result_visible"] = available and item.id not in hidden
         payload.append(values)
+    _annotate_eta(payload)
     return payload
 
 

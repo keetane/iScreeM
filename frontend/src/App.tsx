@@ -2259,6 +2259,38 @@ const format3 = (value: unknown) => {
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(3) : "—";
 };
+// Coarse on purpose: the estimate is worth a glance, not a countdown.
+const formatDuration = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+};
+function JobEta({ job }: { job: Job }) {
+  if (job.eta_seconds === undefined) return null;
+  const rate = job.seconds_per_ligand;
+  const waiting = job.eta_basis === "borrowed" && job.starts_in_seconds !== undefined;
+  return (
+    <div
+      className="mt-1 text-[10px] text-slate-500"
+      title={
+        waiting
+          ? "Estimated from the pace of the job currently running, which may be configured differently"
+          : "Estimated from this job's own pace so far"
+      }
+    >
+      {waiting
+        ? `starts in ~${formatDuration(job.starts_in_seconds!)} · done ~${formatDuration(job.eta_seconds)}`
+        : `~${formatDuration(job.eta_seconds)} left`}
+      {rate
+        ? ` · ${rate < 10 ? rate.toFixed(1) : Math.round(rate)}s/ligand`
+        : ""}
+    </div>
+  );
+}
 function EditableLigandCell({
   value,
   label,
@@ -2640,6 +2672,7 @@ function JobsBottom({
                 }}
               />
             </div>
+            <JobEta job={row.original} />
           </div>
         ),
       },

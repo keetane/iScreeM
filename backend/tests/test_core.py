@@ -1068,6 +1068,90 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
     connection.close()
 
 
+def test_eta_times_the_running_job_and_queues_the_rest_behind_it():
+    from datetime import UTC, datetime, timedelta
+
+    from app.main import _annotate_eta
+
+    now = datetime.now(UTC)
+    payload = [
+        {
+            "status": "RUNNING",
+            "created_at": now - timedelta(minutes=10),
+            "started_at": now - timedelta(seconds=200),
+            "completed_count": 50,
+            "total_count": 150,
+        },
+        {
+            "status": "QUEUED",
+            "created_at": now - timedelta(minutes=5),
+            "started_at": None,
+            "completed_count": 0,
+            "total_count": 30,
+        },
+        {
+            "status": "QUEUED",
+            "created_at": now - timedelta(minutes=1),
+            "started_at": None,
+            "completed_count": 0,
+            "total_count": 10,
+        },
+        {
+            "status": "COMPLETED",
+            "created_at": now - timedelta(hours=1),
+            "started_at": now - timedelta(hours=1),
+            "completed_count": 7,
+            "total_count": 7,
+        },
+    ]
+
+    _annotate_eta(payload)
+
+    running, first_queued, second_queued, finished = payload
+    # 200 s over 50 ligands is 4 s each, with 100 ligands still to go.
+    assert running["seconds_per_ligand"] == pytest.approx(4.0, abs=0.1)
+    assert running["eta_seconds"] == pytest.approx(400.0, abs=10)
+    assert running["eta_basis"] == "measured"
+    # The queue waits for the running job, then for everything ahead of it.
+    assert first_queued["starts_in_seconds"] == pytest.approx(400.0, abs=10)
+    assert first_queued["eta_seconds"] == pytest.approx(400 + 30 * 4, abs=10)
+    assert second_queued["starts_in_seconds"] == pytest.approx(400 + 30 * 4, abs=10)
+    assert second_queued["eta_seconds"] == pytest.approx(400 + 40 * 4, abs=10)
+    assert first_queued["eta_basis"] == "borrowed"
+    assert "eta_seconds" not in finished
+
+
+def test_eta_is_withheld_until_enough_ligands_have_finished():
+    from datetime import UTC, datetime, timedelta
+
+    from app.main import _annotate_eta
+
+    now = datetime.now(UTC)
+    payload = [
+        {
+            "status": "RUNNING",
+            "created_at": now,
+            "started_at": now - timedelta(seconds=90),
+            "completed_count": 2,
+            "total_count": 500,
+        },
+        {
+            "status": "QUEUED",
+            "created_at": now,
+            "started_at": None,
+            "completed_count": 0,
+            "total_count": 10,
+        },
+    ]
+
+    _annotate_eta(payload)
+
+    # Receptor preparation runs before the first ligand, so two samples would
+    # report a rate that is mostly setup. The queue has nothing to borrow.
+    assert "eta_seconds" not in payload[0]
+    assert "eta_seconds" not in payload[1]
+
+
 def test_pruning_drops_results_for_a_job_that_no_longer_exists(tmp_path: Path):
     import csv
 
