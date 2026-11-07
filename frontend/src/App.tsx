@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import type { ComponentType, DragEvent } from "react";
+import { createPortal } from "react-dom";
 import type { LucideProps } from "lucide-react";
 import {
   Activity,
@@ -26,7 +27,6 @@ import {
   Focus,
   FolderOpen,
   FolderPlus,
-  Hexagon,
   Pencil,
   Play,
   RefreshCw,
@@ -73,9 +73,21 @@ const AlphaHelix = (props: LucideProps) => (
     <path d="M8.5 5.5h7M7.5 10.5h9M7.5 15.5h9M8.5 20.5h7" />
   </svg>
 );
+const BrandPentagon = (props: LucideProps) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...props}
+  >
+    <path d="M12 4.8 18.72 9.84 16.08 18H7.92L5.28 9.84Z" />
+  </svg>
+);
 const tabs: { id: Tab; label: string; icon: ComponentType<LucideProps> }[] = [
   { id: "protein", label: "Protein & Pocket", icon: AlphaHelix },
-  { id: "ligands", label: "Ligand Preparation", icon: Hexagon },
+  { id: "ligands", label: "Ligand Preparation", icon: BrandPentagon },
   { id: "docking", label: "Docking", icon: Workflow },
   { id: "jobs", label: "Job Monitor", icon: Activity },
   { id: "licenses", label: "OSS / Licenses", icon: Scale },
@@ -243,7 +255,9 @@ export default function App() {
     [focusRequest, setFocusRequest] = useState<ViewerFocusRequest>(),
     [notice, setNotice] = useState<{ type: "error" | "info"; text: string }>(),
     [updatingResultJobId, setUpdatingResultJobId] = useState<string>(),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [viewerPopupRoot, setViewerPopupRoot] = useState<HTMLElement | null>(null);
+  const viewerPopupWindow = useRef<Window | null>(null);
   const protein =
     project?.proteins.find((item) => item.id === selectedProteinId) ||
     project?.proteins[0];
@@ -546,12 +560,105 @@ export default function App() {
     );
     setVisiblePocketPoints(new Set());
   };
+  const closeViewerPopup = useCallback(() => {
+    const popup = viewerPopupWindow.current;
+    viewerPopupWindow.current = null;
+    setViewerPopupRoot(null);
+    if (popup && !popup.closed) popup.close();
+  }, []);
+  const openViewerPopup = useCallback(() => {
+    const existing = viewerPopupWindow.current;
+    if (existing && !existing.closed) {
+      existing.focus();
+      return;
+    }
+    const popup = window.open(
+      "",
+      "iscreem-viewer",
+      "popup=yes,width=1280,height=900,resizable=yes,scrollbars=no",
+    );
+    if (!popup) {
+      setNotice({
+        type: "error",
+        text: "The viewer window was blocked. Allow pop-ups for iScreeM and try again.",
+      });
+      return;
+    }
+
+    popup.document.head.replaceChildren();
+    popup.document.body.replaceChildren();
+    popup.document.title = "iScreeM Viewer";
+    document
+      .querySelectorAll<HTMLLinkElement | HTMLStyleElement>(
+        'link[rel="stylesheet"], style',
+      )
+      .forEach((source) => {
+        const copy = popup.document.importNode(source, true);
+        if (source instanceof HTMLLinkElement)
+          (copy as HTMLLinkElement).href = source.href;
+        popup.document.head.appendChild(copy);
+      });
+    const favicon = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+    if (favicon) {
+      const copy = popup.document.importNode(favicon, true);
+      copy.href = favicon.href;
+      popup.document.head.appendChild(copy);
+    }
+    popup.document.documentElement.style.width = "100%";
+    popup.document.documentElement.style.height = "100%";
+    popup.document.body.style.cssText =
+      "margin:0;width:100%;height:100%;overflow:hidden;background:#07111f";
+    const root = popup.document.createElement("div");
+    root.id = "iscreem-viewer-popout";
+    root.className = "h-screen w-screen bg-ink p-3";
+    root.style.cssText = "box-sizing:border-box;width:100vw;height:100vh;padding:12px";
+    popup.document.body.appendChild(root);
+
+    viewerPopupWindow.current = popup;
+    popup.addEventListener(
+      "beforeunload",
+      () => {
+        if (viewerPopupWindow.current !== popup) return;
+        viewerPopupWindow.current = null;
+        setViewerPopupRoot(null);
+      },
+      { once: true },
+    );
+    setViewerPopupRoot(root);
+    popup.focus();
+  }, []);
+  useEffect(
+    () => () => {
+      const popup = viewerPopupWindow.current;
+      viewerPopupWindow.current = null;
+      if (popup && !popup.closed) popup.close();
+    },
+    [],
+  );
+  const viewerElement = (
+    <Viewer
+      protein={protein}
+      grid={activeGrid}
+      pockets={project?.pockets || []}
+      visiblePockets={visiblePockets}
+      visiblePocketPoints={visiblePocketPoints}
+      visibleStructureLigands={visibleStructureLigands}
+      dockingPoses={selectedDockingPoses}
+      dockingPoseFocus={dockingPoseFocus}
+      focusRequest={focusRequest}
+      selectedResidues={selectedResidues}
+      onSelectResidue={toggleSelectedResidue}
+      onClearResidues={clearSelectedResidues}
+      isPopout={Boolean(viewerPopupRoot)}
+      onTogglePopout={viewerPopupRoot ? closeViewerPopup : openViewerPopup}
+    />
+  );
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-ink text-slate-100">
       <header className="flex h-16 shrink-0 items-center border-b border-line bg-[#091523] px-5">
         <div className="flex min-w-72 items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-cyan/10 ring-1 ring-cyan/30">
-            <Hexagon className="h-5 w-5 text-cyan" />
+            <BrandPentagon className="h-5 w-5 text-cyan" strokeWidth={2} />
           </div>
           <div>
             <div className="text-sm font-semibold tracking-wide">iScreeM</div>
@@ -688,20 +795,32 @@ export default function App() {
               )}
             </div>
           </aside>
-          <Viewer
-            protein={protein}
-            grid={activeGrid}
-            pockets={project?.pockets || []}
-            visiblePockets={visiblePockets}
-            visiblePocketPoints={visiblePocketPoints}
-            visibleStructureLigands={visibleStructureLigands}
-            dockingPoses={selectedDockingPoses}
-            dockingPoseFocus={dockingPoseFocus}
-            focusRequest={focusRequest}
-            selectedResidues={selectedResidues}
-            onSelectResidue={toggleSelectedResidue}
-            onClearResidues={clearSelectedResidues}
-          />
+          {viewerPopupRoot ? (
+            <div className="panel grid min-h-0 place-items-center p-6 text-center">
+              <div>
+                <ExternalLink className="mx-auto mb-3 h-8 w-8 text-cyan" />
+                <p className="text-sm font-semibold text-slate-200">
+                  Viewer is open in a separate window
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Docking table selections continue to update the pop-out viewer.
+                </p>
+                <div className="mt-4 flex justify-center gap-2">
+                  <button
+                    className="btn"
+                    onClick={() => viewerPopupWindow.current?.focus()}
+                  >
+                    Bring to front
+                  </button>
+                  <button className="btn" onClick={closeViewerPopup}>
+                    Return viewer
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            viewerElement
+          )}
           <aside className="panel min-h-0 overflow-y-auto">
             <RightPanel
               tab={tab}
@@ -765,6 +884,7 @@ export default function App() {
           </section>
         </div>
       </main>
+      {viewerPopupRoot && createPortal(viewerElement, viewerPopupRoot)}
     </div>
   );
 }
@@ -935,6 +1055,14 @@ function ReceptorTreeItem({
               return (
                 <div className="tree-item w-full" key={key}>
                   <button
+                    className="icon-btn h-6 w-6 shrink-0"
+                    title={`Copy SMILES for ${ligand.name}`}
+                    aria-label={`Copy SMILES for ${ligand.name}`}
+                    onClick={() => void onCopyLigandSmiles(protein, ligand)}
+                  >
+                    <Copy />
+                  </button>
+                  <button
                     className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     onClick={() => {
                       onSelect();
@@ -960,14 +1088,6 @@ function ReceptorTreeItem({
                     }}
                   >
                     <Focus />
-                  </button>
-                  <button
-                    className="icon-btn h-6 w-6 shrink-0"
-                    title={`Copy SMILES for ${ligand.name}`}
-                    aria-label={`Copy SMILES for ${ligand.name}`}
-                    onClick={() => void onCopyLigandSmiles(protein, ligand)}
-                  >
-                    <Copy />
                   </button>
                 </div>
               );

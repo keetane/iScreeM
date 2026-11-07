@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, Focus, RotateCcw, Layers3 } from "lucide-react";
+import {
+  Camera,
+  Focus,
+  Layers3,
+  Maximize2,
+  Minimize2,
+  RotateCcw,
+} from "lucide-react";
 import type { Grid, Pocket, Protein, StructureLigand } from "../types";
 import { AXIS_COLORS } from "../axisColors";
 
@@ -19,6 +26,8 @@ type Props = {
   selectedResidues: Set<string>;
   onSelectResidue: (key: string) => void;
   onClearResidues: () => void;
+  isPopout?: boolean;
+  onTogglePopout?: () => void;
 };
 const pocketColors = [
   "#47d7e8",
@@ -208,6 +217,8 @@ export function Viewer({
   selectedResidues,
   onSelectResidue,
   onClearResidues,
+  isPopout = false,
+  onTogglePopout,
 }: Props) {
   const host = useRef<HTMLDivElement>(null),
     viewer = useRef<any>(null),
@@ -240,6 +251,7 @@ export function Viewer({
     onSelectResidueRef.current = onSelectResidue;
   }, [onSelectResidue]);
   useEffect(() => {
+    const eventWindow = host.current?.ownerDocument.defaultView ?? window;
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (
@@ -261,8 +273,8 @@ export function Viewer({
         setStickResidueName(aminoAcidShortcuts[event.key]);
       }
     };
-    window.addEventListener("keydown", handleShortcut);
-    return () => window.removeEventListener("keydown", handleShortcut);
+    eventWindow.addEventListener("keydown", handleShortcut);
+    return () => eventWindow.removeEventListener("keydown", handleShortcut);
   }, []);
   useEffect(() => {
     let alive = true;
@@ -289,6 +301,8 @@ export function Viewer({
   useEffect(() => {
     if (!viewerReady || !viewer.current) return;
     const canvas = viewer.current.getCanvas() as HTMLCanvasElement;
+    const eventWindow = canvas.ownerDocument.defaultView ?? window;
+    const isPopupCanvas = canvas.ownerDocument !== document;
     let clipGesture:
       | { x: number; y: number; near: number; far: number }
       | undefined;
@@ -316,11 +330,25 @@ export function Viewer({
       if (far - near > 1) viewer.current.setSlab(near, far);
       viewer.current.render();
     };
-    const mouseUp = () => {
+    const mouseUp = (event: MouseEvent) => {
+      // 3Dmol registers its release handler on the document that loaded the
+      // library. A viewer rendered through a portal belongs to the pop-out
+      // document, so its mouseup never reaches that handler unless bridged.
+      if (isPopupCanvas) viewer.current?._handleMouseUp(event);
       clipGesture = undefined;
-      window.setTimeout(() => {
+      eventWindow.setTimeout(() => {
         ctrlLeftClickRef.current = false;
       }, 0);
+    };
+    const touchEnd = (event: TouchEvent) => {
+      if (isPopupCanvas) viewer.current?._handleMouseUp(event);
+      clipGesture = undefined;
+      ctrlLeftClickRef.current = false;
+    };
+    const cancelGesture = () => {
+      clipGesture = undefined;
+      ctrlLeftClickRef.current = false;
+      if (viewer.current) viewer.current.isDragging = false;
     };
     const wheel = (event: WheelEvent) => {
       if (!viewer.current) return;
@@ -345,14 +373,27 @@ export function Viewer({
     canvas.addEventListener("mousemove", mouseMove, true);
     canvas.addEventListener("wheel", wheel, { capture: true, passive: false });
     canvas.addEventListener("contextmenu", contextMenu, true);
-    window.addEventListener("mouseup", mouseUp, true);
+    eventWindow.addEventListener("mouseup", mouseUp, true);
+    eventWindow.addEventListener("touchend", touchEnd, true);
+    eventWindow.addEventListener("blur", cancelGesture);
     return () => {
       canvas.removeEventListener("mousedown", mouseDown, true);
       canvas.removeEventListener("mousemove", mouseMove, true);
       canvas.removeEventListener("wheel", wheel, true);
       canvas.removeEventListener("contextmenu", contextMenu, true);
-      window.removeEventListener("mouseup", mouseUp, true);
+      eventWindow.removeEventListener("mouseup", mouseUp, true);
+      eventWindow.removeEventListener("touchend", touchEnd, true);
+      eventWindow.removeEventListener("blur", cancelGesture);
     };
+  }, [viewerReady]);
+  useEffect(() => {
+    if (!viewerReady || !viewer.current || !host.current) return;
+    const resizeObserver = new ResizeObserver(() => {
+      viewer.current?.resize();
+      viewer.current?.render();
+    });
+    resizeObserver.observe(host.current);
+    return () => resizeObserver.disconnect();
   }, [viewerReady]);
   useEffect(() => {
     if (!viewerReady || !viewer.current || !protein) return;
@@ -862,8 +903,16 @@ export function Viewer({
       contacts.slice(0, 200).forEach(({ ligand, receptor }) => {
         const start = { x: ligand.x, y: ligand.y, z: ligand.z },
           end = { x: receptor.x, y: receptor.y, z: receptor.z };
-        v.addLine({ start, end, color: "#ffd34d", linewidth: 4 });
-        v.addCylinder({ start, end, color: "#ffd34d", radius: 0.08 });
+        const dashedInteraction = {
+          start,
+          end,
+          color: "#ffd34d",
+          dashed: true,
+          dashLength: 0.28,
+          gapLength: 0.2,
+        };
+        v.addLine({ ...dashedInteraction, linewidth: 4 });
+        v.addCylinder({ ...dashedInteraction, radius: 0.08 });
       });
     }
     if (grid) {
@@ -973,6 +1022,18 @@ export function Viewer({
       )}
       <OrientationAxes quaternion={viewQuaternion} />
       <div className="absolute right-3 top-3 flex gap-1 rounded-lg border border-line bg-panel/90 p-1 backdrop-blur">
+        {onTogglePopout && (
+          <button
+            className="icon-btn"
+            title={isPopout ? "Return viewer to main window" : "Open viewer in new window"}
+            aria-label={
+              isPopout ? "Return viewer to main window" : "Open viewer in new window"
+            }
+            onClick={onTogglePopout}
+          >
+            {isPopout ? <Minimize2 /> : <Maximize2 />}
+          </button>
+        )}
         <button
           className="icon-btn"
           title="Reset view"
