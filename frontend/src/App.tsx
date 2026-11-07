@@ -43,6 +43,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { api } from "./api";
 import type {
   ChainSequence,
+  DockingAnalysisPoint,
   DockingResult,
   DockingResultPage,
   DockingSummary,
@@ -229,6 +230,8 @@ export default function App() {
     [projects, setProjects] = useState<{ id: string; name: string }[]>([]),
     [project, setProject] = useState<Project>(),
     [jobs, setJobs] = useState<Job[]>([]);
+  const [analysisScoreX, setAnalysisScoreX] = useState("XLogP");
+  const [analysisScoreY, setAnalysisScoreY] = useState("affinity");
   const [activeGrid, setActiveGrid] = useState<Grid>(),
     [selectedProteinId, setSelectedProteinId] = useState<string>(),
     [visiblePockets, setVisiblePockets] = useState<Set<string>>(new Set()),
@@ -733,6 +736,40 @@ export default function App() {
         <main className="min-h-0 flex-1 overflow-hidden p-5">
           <AnalysisPanel
             project={project}
+            scoreX={analysisScoreX}
+            scoreY={analysisScoreY}
+            onScoreXChange={setAnalysisScoreX}
+            onScoreYChange={setAnalysisScoreY}
+            onSelectPose={(point: DockingAnalysisPoint) => {
+              const row: DockingResult = {
+                key: point.key,
+                rank: point.rank,
+                job_id: point.job_id,
+                job_name: point.job_name,
+                engine: point.engine,
+                created_at: point.created_at,
+                protein_id: point.protein_id || "",
+                receptor_name: point.receptor_name,
+                ligand_id: point.ligand_id,
+                ligand_code: point.ligand_code,
+                ligand_name: point.ligand_name,
+                smiles: point.smiles,
+                pose: point.pose,
+                affinity: point.affinity,
+                scores: point.scores,
+                pose_url: point.pose_url,
+              };
+              if (point.protein_id && point.protein_id !== protein?.id)
+                selectProtein(point.protein_id);
+              setDockingResultCache((current) => {
+                const next = new Map(current);
+                next.set(row.key, row);
+                return next;
+              });
+              setActivePose(row);
+              setDockingPoseFocus({ key: row.key, nonce: Date.now() });
+              openViewerPopup();
+            }}
           />
         </main>
       ) : (

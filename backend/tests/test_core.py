@@ -1256,6 +1256,9 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
     assert set(analysis["score_columns"]) == {"affinity", *expected_fields}
     assert len(analysis["points"]) == 105
     assert analysis["points"][0]["chemotype_id"] != "CT-UNKNOWN"
+    assert analysis["points"][0]["key"].startswith("job-1:ligand-")
+    assert analysis["points"][0]["pose"] == 1
+    assert analysis["points"][0]["protein_id"] == "protein-1"
     assert hidden["total"] == 104
     assert hidden["items"][0]["ligand_code"] == "ligand-001"
     with pytest.raises(ValueError, match="ligand-000"):

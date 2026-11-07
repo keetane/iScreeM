@@ -1281,7 +1281,13 @@ def docking_results(
 def docking_analysis(project_id: str, db: Session = Depends(get_db)):
     connection = _open_synced_docking_results_index(project_id, db)
     try:
-        return query_analysis_data(connection)
+        result = query_analysis_data(connection)
+        for point in result["points"]:
+            point["pose_url"] = (
+                f"/api/projects/{project_id}/docking-results/"
+                f"{point['job_id']}/{point['ligand_code']}/poses?pose={point['pose']}"
+            )
+        return result
     finally:
         connection.close()
 

@@ -495,12 +495,21 @@ def query_analysis_data(connection: sqlite3.Connection) -> dict:
         match_key = smiles or row["ligand_id"] or row["ligand_code"]
         points.append(
             {
+                "key": row["result_key"],
+                "rank": row["rank"],
                 "job_id": row["job_id"],
+                "job_name": row["job_name"],
+                "engine": row["engine"],
+                "created_at": row["created_at"],
+                "protein_id": row["protein_id"],
+                "receptor_name": row["receptor_name"],
                 "match_key": match_key,
                 "ligand_id": row["ligand_id"],
                 "ligand_code": row["ligand_code"],
                 "ligand_name": row["ligand_name"],
                 "smiles": smiles,
+                "pose": row["pose"],
+                "affinity": row["affinity"],
                 "chemotype_id": row["chemotype_id"] or "CT-UNKNOWN",
                 "chemotype_smiles": row["chemotype_smiles"] or "",
                 "scores": scores,

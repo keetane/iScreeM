@@ -3,6 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import { api } from "../api";
 import type {
   DockingAnalysis,
+  DockingAnalysisPoint,
   Project,
 } from "../types";
 
@@ -32,6 +33,7 @@ type ChartPoint = {
   jobName: string;
   colorKey: string;
   smiles: string;
+  source: DockingAnalysisPoint;
 };
 
 type ChemotypeRow = {
@@ -42,6 +44,13 @@ type ChemotypeRow = {
 };
 
 type ChemotypeSortKey = "scaffold" | "metric" | "compounds";
+
+type PlotFilterCondition = {
+  id: number;
+  metric: string;
+  minimum: string;
+  maximum: string;
+};
 
 const chemicalPropertyKeys = new Set([
   "MW",
@@ -105,29 +114,39 @@ const pearson = (points: ChartPoint[]) => {
 
 export function AnalysisPanel({
   project,
+  scoreX,
+  scoreY,
+  onScoreXChange,
+  onScoreYChange,
+  onSelectPose,
 }: {
   project?: Project;
+  scoreX: string;
+  scoreY: string;
+  onScoreXChange: (score: string) => void;
+  onScoreYChange: (score: string) => void;
+  onSelectPose: (point: DockingAnalysisPoint) => void;
 }) {
   const [data, setData] = useState<DockingAnalysis>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [scoreX, setScoreX] = useState("affinity");
-  const [scoreY, setScoreY] = useState("affinity");
   const [colorMode, setColorMode] = useState<"chemotype" | "job">("chemotype");
   const [sizeColumn, setSizeColumn] = useState("none");
   const [selectedChemotypes, setSelectedChemotypes] = useState<Set<string>>(
     new Set(),
   );
-  const [chemotypeFilter, setChemotypeFilter] = useState("");
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [chemotypeMetric, setChemotypeMetric] = useState("affinity");
   const [aggregateMode, setAggregateMode] = useState<"min" | "max">("min");
-  const [metricMinimum, setMetricMinimum] = useState("");
-  const [metricMaximum, setMetricMaximum] = useState("");
+  const [plotFilters, setPlotFilters] = useState<PlotFilterCondition[]>([
+    { id: 1, metric: "affinity", minimum: "", maximum: "" },
+  ]);
+  const nextFilterId = useRef(2);
   const [chemotypeSort, setChemotypeSort] = useState<{
     key: ChemotypeSortKey;
     direction: "asc" | "desc";
   }>({ key: "compounds", direction: "desc" });
+  const [selectedPoseKey, setSelectedPoseKey] = useState<string>();
 
   const load = async () => {
     if (!project) {
@@ -143,8 +162,8 @@ export function AnalysisPanel({
         ? next.score_columns
         : ["affinity"];
       const nextX = scores.includes(scoreX) ? scoreX : scores[0];
-      setScoreX(nextX);
-      setScoreY(
+      onScoreXChange(nextX);
+      onScoreYChange(
         scores.includes(scoreY) && scoreY !== nextX
           ? scoreY
           : scores.find((score) => score !== nextX) || nextX,
@@ -155,6 +174,13 @@ export function AnalysisPanel({
       )
         setSizeColumn("none");
       if (!scores.includes(chemotypeMetric)) setChemotypeMetric(scores[0]);
+      setPlotFilters((current) =>
+        current.map((filter) =>
+          scores.includes(filter.metric)
+            ? filter
+            : { ...filter, metric: scores[0] },
+        ),
+      );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -164,11 +190,13 @@ export function AnalysisPanel({
 
   useEffect(() => {
     setSelectedChemotypes(new Set());
-    setChemotypeFilter("");
     setSelectedOnly(false);
-    setMetricMinimum("");
-    setMetricMaximum("");
+    setPlotFilters([
+      { id: 1, metric: "affinity", minimum: "", maximum: "" },
+    ]);
+    nextFilterId.current = 2;
     setChemotypeSort({ key: "compounds", direction: "desc" });
+    setSelectedPoseKey(undefined);
   }, [project?.id]);
 
   useEffect(() => {
@@ -199,6 +227,23 @@ export function AnalysisPanel({
       const x = finiteNumber(row.scores[scoreX]);
       const y = finiteNumber(row.scores[scoreY]);
       if (x === undefined || y === undefined) return [];
+      if (
+        (selectedOnly && !selectedChemotypes.has(row.chemotype_id)) ||
+        !plotFilters.every((filter) => {
+          const hasMinimum = filter.minimum.trim() !== "";
+          const hasMaximum = filter.maximum.trim() !== "";
+          if (!hasMinimum && !hasMaximum) return true;
+          const value = finiteNumber(row.scores[filter.metric]);
+          if (value === undefined) return false;
+          const minimum = hasMinimum ? Number(filter.minimum) : undefined;
+          const maximum = hasMaximum ? Number(filter.maximum) : undefined;
+          return (
+            (minimum === undefined || !Number.isFinite(minimum) || value >= minimum) &&
+            (maximum === undefined || !Number.isFinite(maximum) || value <= maximum)
+          );
+        })
+      )
+        return [];
       return [
         {
           x,
@@ -214,10 +259,20 @@ export function AnalysisPanel({
           jobName: jobs.get(row.job_id)?.name || row.job_id,
           colorKey: colorMode === "job" ? row.job_id : row.chemotype_id,
           smiles: row.smiles,
+          source: row,
         },
       ];
     });
-  }, [colorMode, data, scoreX, scoreY, sizeColumn]);
+  }, [
+    colorMode,
+    data,
+    plotFilters,
+    scoreX,
+    scoreY,
+    selectedChemotypes,
+    selectedOnly,
+    sizeColumn,
+  ]);
 
   const crosstable = useMemo(() => {
     if (!data) return [];
@@ -243,31 +298,13 @@ export function AnalysisPanel({
   }, [data]);
 
   const visibleCrosstable = useMemo(() => {
-    const query = chemotypeFilter.trim().toLowerCase();
-    const minimum = metricMinimum.trim() === "" ? undefined : Number(metricMinimum);
-    const maximum = metricMaximum.trim() === "" ? undefined : Number(metricMaximum);
-    const filtered = crosstable.filter((row) => {
-      const metric = aggregateMetric(row, chemotypeMetric, aggregateMode);
-      return (
-        (!selectedOnly || selectedChemotypes.has(row.id)) &&
-        (!query ||
-          row.id.toLowerCase().includes(query) ||
-          row.scaffold.toLowerCase().includes(query)) &&
-        (minimum === undefined ||
-          !Number.isFinite(minimum) ||
-          (metric !== undefined && metric >= minimum)) &&
-        (maximum === undefined ||
-          !Number.isFinite(maximum) ||
-          (metric !== undefined && metric <= maximum))
-      );
-    });
     const valueForSort = (row: ChemotypeRow) => {
       if (chemotypeSort.key === "scaffold") return row.scaffold || row.id;
       if (chemotypeSort.key === "metric")
         return aggregateMetric(row, chemotypeMetric, aggregateMode);
       return row.compounds.size;
     };
-    return filtered.sort((left, right) => {
+    return [...crosstable].sort((left, right) => {
       const leftValue = valueForSort(left);
       const rightValue = valueForSort(right);
       if (leftValue === undefined && rightValue !== undefined) return 1;
@@ -282,14 +319,9 @@ export function AnalysisPanel({
     });
   }, [
     aggregateMode,
-    chemotypeFilter,
     chemotypeMetric,
     chemotypeSort,
     crosstable,
-    metricMaximum,
-    metricMinimum,
-    selectedChemotypes,
-    selectedOnly,
   ]);
 
   const toggleChemotypeSort = (
@@ -465,47 +497,110 @@ export function AnalysisPanel({
               </table>
             </div>
             <div className="shrink-0 border-t border-line bg-[#0b1725] p-3">
-              <div className="mb-2 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                <span>Filter</span>
-                <span>{selectedChemotypes.size} selected</span>
-              </div>
-              <input
-                className="input"
-                value={chemotypeFilter}
-                onChange={(event) => setChemotypeFilter(event.target.value)}
-                placeholder="Chemotype ID or scaffold SMILES…"
-              />
-              <div className="mt-2 grid grid-cols-[minmax(0,1fr)_72px_72px] gap-2">
-                <select
-                  className="input"
-                  value={chemotypeMetric}
-                  onChange={(event) => setChemotypeMetric(event.target.value)}
-                  aria-label="Score or chemical property filter"
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    Plot filter
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-slate-600">
+                    Multiple conditions are combined with AND.
+                  </div>
+                </div>
+                <button
+                  className="btn-secondary px-2 py-1 text-xs"
+                  onClick={() => {
+                    const metric = data.score_columns.includes(scoreX)
+                      ? scoreX
+                      : data.score_columns[0];
+                    setPlotFilters((current) => [
+                      ...current,
+                      {
+                        id: nextFilterId.current++,
+                        metric,
+                        minimum: "",
+                        maximum: "",
+                      },
+                    ]);
+                  }}
                 >
-                  <MetricOptions columns={data.score_columns} />
-                </select>
-                <input
-                  className="input"
-                  type="number"
-                  step="any"
-                  value={metricMinimum}
-                  onChange={(event) => setMetricMinimum(event.target.value)}
-                  placeholder="Min"
-                  aria-label="Minimum aggregate value"
-                />
-                <input
-                  className="input"
-                  type="number"
-                  step="any"
-                  value={metricMaximum}
-                  onChange={(event) => setMetricMaximum(event.target.value)}
-                  placeholder="Max"
-                  aria-label="Maximum aggregate value"
-                />
+                  Add filter
+                </button>
               </div>
-              <div className="mt-1 text-[10px] text-slate-500">
-                Range applies to scaffold {aggregateMode}: {scoreLabel(chemotypeMetric)}
+              <div className="max-h-40 space-y-2 overflow-auto pr-1">
+                {plotFilters.map((filter) => (
+                  <div
+                    key={filter.id}
+                    className="grid grid-cols-[minmax(0,1fr)_68px_68px_24px] items-center gap-1.5"
+                  >
+                    <select
+                      className="input min-w-0"
+                      value={filter.metric}
+                      onChange={(event) =>
+                        setPlotFilters((current) =>
+                          current.map((item) =>
+                            item.id === filter.id
+                              ? { ...item, metric: event.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                      aria-label="Plot filter property"
+                    >
+                      <MetricOptions columns={data.score_columns} />
+                    </select>
+                    <input
+                      className="input min-w-0"
+                      type="number"
+                      step="any"
+                      value={filter.minimum}
+                      onChange={(event) =>
+                        setPlotFilters((current) =>
+                          current.map((item) =>
+                            item.id === filter.id
+                              ? { ...item, minimum: event.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                      placeholder="Min"
+                      aria-label={`${scoreLabel(filter.metric)} minimum`}
+                    />
+                    <input
+                      className="input min-w-0"
+                      type="number"
+                      step="any"
+                      value={filter.maximum}
+                      onChange={(event) =>
+                        setPlotFilters((current) =>
+                          current.map((item) =>
+                            item.id === filter.id
+                              ? { ...item, maximum: event.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                      placeholder="Max"
+                      aria-label={`${scoreLabel(filter.metric)} maximum`}
+                    />
+                    <button
+                      className="rounded p-1 text-slate-500 transition hover:bg-white/5 hover:text-red-300"
+                      aria-label={`Remove ${scoreLabel(filter.metric)} filter`}
+                      onClick={() =>
+                        setPlotFilters((current) =>
+                          current.filter((item) => item.id !== filter.id),
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
+              {plotFilters.length === 0 && (
+                <div className="py-2 text-center text-xs text-slate-600">
+                  No property filters.
+                </div>
+              )}
               <div className="mt-2 flex items-center justify-between gap-2 text-xs">
                 <label className="flex items-center gap-2 text-slate-400">
                   <input
@@ -513,27 +608,38 @@ export function AnalysisPanel({
                     checked={selectedOnly}
                     onChange={(event) => setSelectedOnly(event.target.checked)}
                   />
-                  Selected only
+                  Selected chemotypes only
                 </label>
-                <button
-                  className="btn-secondary px-2 py-1 text-xs"
-                  disabled={
-                    selectedChemotypes.size === 0 &&
-                    !selectedOnly &&
-                    !chemotypeFilter &&
-                    !metricMinimum &&
-                    !metricMaximum
-                  }
-                  onClick={() => {
-                    setSelectedChemotypes(new Set());
-                    setSelectedOnly(false);
-                    setChemotypeFilter("");
-                    setMetricMinimum("");
-                    setMetricMaximum("");
-                  }}
-                >
-                  Clear filters
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="text-[10px] text-slate-500 transition hover:text-slate-300 disabled:cursor-default disabled:hover:text-slate-500"
+                    disabled={selectedChemotypes.size === 0}
+                    onClick={() => setSelectedChemotypes(new Set())}
+                  >
+                    {selectedChemotypes.size} selected · clear
+                  </button>
+                  <button
+                    className="btn-secondary px-2 py-1 text-xs"
+                    disabled={
+                      !selectedOnly &&
+                      !plotFilters.some(
+                        (filter) => filter.minimum || filter.maximum,
+                      )
+                    }
+                    onClick={() => {
+                      setSelectedOnly(false);
+                      setPlotFilters((current) =>
+                        current.map((filter) => ({
+                          ...filter,
+                          minimum: "",
+                          maximum: "",
+                        })),
+                      );
+                    }}
+                  >
+                    Clear filter
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -541,12 +647,12 @@ export function AnalysisPanel({
           <section className="panel flex min-h-0 flex-col overflow-hidden">
             <div className="grid shrink-0 grid-cols-2 gap-3 border-b border-line p-3 xl:grid-cols-4">
               <Control label="Y score">
-                <select className="input" value={scoreY} onChange={(event) => setScoreY(event.target.value)}>
+                <select className="input" value={scoreY} onChange={(event) => onScoreYChange(event.target.value)}>
                   {data.score_columns.map((score) => <option key={score} value={score}>{scoreLabel(score)}</option>)}
                 </select>
               </Control>
               <Control label="X score">
-                <select className="input" value={scoreX} onChange={(event) => setScoreX(event.target.value)}>
+                <select className="input" value={scoreX} onChange={(event) => onScoreXChange(event.target.value)}>
                   {data.score_columns.map((score) => <option key={score} value={score}>{scoreLabel(score)}</option>)}
                 </select>
               </Control>
@@ -567,7 +673,7 @@ export function AnalysisPanel({
               <span><strong className="text-slate-100">{plottedPoints.length.toLocaleString()}</strong> plotted results</span>
               <span>Pearson r: <strong className="text-slate-100">{correlation === undefined ? "—" : correlation.toFixed(3)}</strong></span>
               <span className="min-w-0 truncate">{scoreLabel(scoreX)} × {scoreLabel(scoreY)}</span>
-              <span className="ml-auto whitespace-nowrap">Drag to zoom · Double-click to reset</span>
+              <span className="ml-auto whitespace-nowrap">Click point to view pose · Drag to zoom · Double-click to reset</span>
             </div>
             <ScatterPlot
               points={plottedPoints}
@@ -576,6 +682,11 @@ export function AnalysisPanel({
               colorByKey={plotColors}
               legend={colorLegend}
               selectedChemotypes={selectedChemotypes}
+              selectedPointKey={selectedPoseKey}
+              onSelectPoint={(point) => {
+                setSelectedPoseKey(point.source.key);
+                onSelectPose(point.source);
+              }}
             />
           </section>
         </div>
@@ -618,6 +729,8 @@ function ScatterPlot({
   colorByKey,
   legend,
   selectedChemotypes,
+  selectedPointKey,
+  onSelectPoint,
 }: {
   points: ChartPoint[];
   xLabel: string;
@@ -625,6 +738,8 @@ function ScatterPlot({
   colorByKey: Map<string, string>;
   legend: { key: string; label: string; color: string }[];
   selectedChemotypes: Set<string>;
+  selectedPointKey?: string;
+  onSelectPoint: (point: ChartPoint) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const plottedRef = useRef<{ x: number; y: number; radius: number; point: ChartPoint }[]>([]);
@@ -778,18 +893,24 @@ function ScatterPlot({
         )
           return [];
         const pointRadius = radius(point.size);
+        const selectedPoint = point.source.key === selectedPointKey;
         const muted =
           selectedChemotypes.size > 0 &&
           !selectedChemotypes.has(point.chemotypeId);
         context.beginPath();
-        context.arc(x, y, pointRadius, 0, Math.PI * 2);
+        context.arc(x, y, pointRadius + (selectedPoint ? 2 : 0), 0, Math.PI * 2);
         context.fillStyle = muted
           ? "#64748b55"
           : `${colorByKey.get(point.colorKey) || "#94a3b8"}cc`;
         context.fill();
-        context.strokeStyle = muted ? "#94a3b833" : "#e2e8f055";
+        context.strokeStyle = selectedPoint
+          ? "#f8fafc"
+          : muted
+            ? "#94a3b833"
+            : "#e2e8f055";
+        context.lineWidth = selectedPoint ? 2.5 : 1;
         context.stroke();
-        return [{ x, y, radius: pointRadius, point }];
+        return [{ x, y, radius: pointRadius + (selectedPoint ? 2 : 0), point }];
       });
       context.restore();
     };
@@ -797,7 +918,15 @@ function ScatterPlot({
     observer.observe(container);
     draw();
     return () => observer.disconnect();
-  }, [points, xLabel, yLabel, colorByKey, selectedChemotypes, view]);
+  }, [
+    points,
+    xLabel,
+    yLabel,
+    colorByKey,
+    selectedChemotypes,
+    selectedPointKey,
+    view,
+  ]);
 
   const pointerPosition = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -808,24 +937,38 @@ function ScatterPlot({
     };
   };
 
+  const nearestPlottedPoint = (x: number, y: number) => {
+    let nearest: (typeof plottedRef.current)[number] | undefined;
+    let distance = Number.POSITIVE_INFINITY;
+    for (const item of plottedRef.current) {
+      const current = Math.hypot(item.x - x, item.y - y);
+      if (current <= item.radius + 5 && current < distance) {
+        nearest = item;
+        distance = current;
+      }
+    }
+    return nearest;
+  };
+
   const finishDrag = (event: ReactMouseEvent<HTMLCanvasElement>) => {
     const start = dragStartRef.current;
     const scale = scaleRef.current;
     dragStartRef.current = undefined;
     setDragBox(undefined);
-    if (!start || !scale) return;
+    if (!start || !scale) return false;
     const { x, y } = pointerPosition(event);
     const left = Math.max(scale.left, Math.min(start.x, x));
     const right = Math.min(scale.right, Math.max(start.x, x));
     const top = Math.max(scale.top, Math.min(start.y, y));
     const bottom = Math.min(scale.bottom, Math.max(start.y, y));
-    if (right - left < 8 || bottom - top < 8) return;
+    if (right - left < 8 || bottom - top < 8) return false;
     setView({
       xLow: scale.inverseX(left),
       xHigh: scale.inverseX(right),
       yLow: scale.inverseY(bottom),
       yHigh: scale.inverseY(top),
     });
+    return true;
   };
 
   return (
@@ -847,7 +990,12 @@ function ScatterPlot({
           setDragBox({ startX: x, startY: y, endX: x, endY: y });
           setHover(undefined);
         }}
-        onMouseUp={finishDrag}
+        onMouseUp={(event) => {
+          const { x, y } = pointerPosition(event);
+          if (finishDrag(event)) return;
+          const nearest = nearestPlottedPoint(x, y);
+          if (nearest) onSelectPoint(nearest.point);
+        }}
         onMouseLeave={() => {
           setHover(undefined);
           setDragBox(undefined);
@@ -864,15 +1012,7 @@ function ScatterPlot({
             });
             return;
           }
-          let nearest: (typeof plottedRef.current)[number] | undefined;
-          let distance = Number.POSITIVE_INFINITY;
-          for (const item of plottedRef.current) {
-            const current = Math.hypot(item.x - x, item.y - y);
-            if (current <= item.radius + 5 && current < distance) {
-              nearest = item;
-              distance = current;
-            }
-          }
+          const nearest = nearestPlottedPoint(x, y);
           setHover(
             nearest
               ? {
