@@ -4,13 +4,22 @@ import re
 import sqlite3
 from pathlib import Path
 
+from .chemotypes import (
+    chemotype_from_smiles,
+    molecular_properties_from_smiles,
+    normalized_score_fields,
+)
+
 PAGE_SIZE = 100
+INDEX_VERSION = 2
 FIXED_FIELDS = {
     "rank",
     "ligand_code",
     "ligand_id",
     "ligand_name",
     "smiles",
+    "chemotype_id",
+    "chemotype_smiles",
     "pose",
     "",
 }
@@ -44,6 +53,8 @@ def open_results_index(path: Path) -> sqlite3.Connection:
             ligand_code TEXT NOT NULL,
             ligand_name TEXT NOT NULL,
             smiles TEXT NOT NULL,
+            chemotype_id TEXT NOT NULL DEFAULT '',
+            chemotype_smiles TEXT NOT NULL DEFAULT '',
             pose INTEGER NOT NULL,
             affinity REAL,
             scores_json TEXT NOT NULL,
@@ -55,7 +66,8 @@ def open_results_index(path: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS indexed_jobs (
             job_id TEXT PRIMARY KEY,
             source_mtime_ns INTEGER NOT NULL,
-            score_fields_json TEXT NOT NULL
+            score_fields_json TEXT NOT NULL,
+            index_version INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS hidden_ligands (
             job_id TEXT NOT NULL,
@@ -67,6 +79,30 @@ def open_results_index(path: Path) -> sqlite3.Connection:
         );
         """
     )
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(results)").fetchall()
+    }
+    migrated = False
+    for name in ("chemotype_id", "chemotype_smiles"):
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE results ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+            )
+            migrated = True
+    if migrated:
+        # Re-read legacy score summaries so their chemotypes are backfilled.
+        connection.execute("DELETE FROM indexed_jobs")
+        connection.execute("DELETE FROM results")
+        connection.commit()
+    indexed_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(indexed_jobs)").fetchall()
+    }
+    if "index_version" not in indexed_columns:
+        connection.execute(
+            "ALTER TABLE indexed_jobs ADD COLUMN index_version INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.commit()
     return connection
 
 
@@ -90,13 +126,20 @@ def index_job_csv(
 ) -> None:
     source_mtime_ns = csv_path.stat().st_mtime_ns
     indexed = connection.execute(
-        "SELECT source_mtime_ns FROM indexed_jobs WHERE job_id = ?", (job["job_id"],)
+        "SELECT source_mtime_ns, index_version FROM indexed_jobs WHERE job_id = ?",
+        (job["job_id"],),
     ).fetchone()
-    if indexed and indexed["source_mtime_ns"] == source_mtime_ns:
+    if (
+        indexed
+        and indexed["source_mtime_ns"] == source_mtime_ns
+        and indexed["index_version"] == INDEX_VERSION
+    ):
         return
 
     score_fields: set[str] = set()
     connection.execute("DELETE FROM results WHERE job_id = ?", (job["job_id"],))
+    chemotype_cache: dict[str, dict[str, str]] = {}
+    property_cache: dict[str, dict[str, float | int]] = {}
     with csv_path.open(newline="", errors="replace") as handle:
         for fallback_rank, item in enumerate(csv.DictReader(handle), 1):
             ligand_code = str(item.get("ligand_code") or "").strip()
@@ -119,7 +162,6 @@ def index_job_csv(
                 if key not in FIXED_FIELDS
                 and (value := _number(raw)) is not None
             }
-            score_fields.update(scores)
             affinity = _number(item.get("affinity"))
             if affinity is not None:
                 scores["affinity"] = affinity
@@ -129,14 +171,38 @@ def index_job_csv(
             ligand_name = ligand_name or ligand_names.get(ligand_id, ligand_code)
             smiles = str(item.get("smiles") or "").strip()
             smiles = smiles or ligand_smiles.get(ligand_id, "")
+            properties = property_cache.setdefault(
+                smiles, molecular_properties_from_smiles(smiles)
+            )
+            for key, value in properties.items():
+                scores.setdefault(key, value)
+            for key, value in normalized_score_fields(
+                affinity, scores.get("HAC")
+            ).items():
+                scores.setdefault(key, value)
+            score_fields.update(scores)
+            chemotype = {
+                "chemotype_id": str(item.get("chemotype_id") or "").strip(),
+                "chemotype_smiles": str(
+                    item.get("chemotype_smiles") or ""
+                ).strip(),
+            }
+            calculated_chemotype = chemotype_cache.setdefault(
+                smiles, chemotype_from_smiles(smiles)
+            )
+            if calculated_chemotype["chemotype_id"] != "CT-UNKNOWN":
+                chemotype = calculated_chemotype
+            elif not chemotype["chemotype_id"]:
+                chemotype = calculated_chemotype
             result_key = f"{job['job_id']}:{ligand_code}:{pose}"
             connection.execute(
                 """
                 INSERT INTO results (
                     result_key, rank, job_id, job_name, engine, created_at,
                     protein_id, receptor_name, ligand_id, ligand_code,
-                    ligand_name, smiles, pose, affinity, scores_json, sdf_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ligand_name, smiles, chemotype_id, chemotype_smiles,
+                    pose, affinity, scores_json, sdf_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_key,
@@ -151,6 +217,8 @@ def index_job_csv(
                     ligand_code,
                     ligand_name,
                     smiles,
+                    chemotype["chemotype_id"],
+                    chemotype["chemotype_smiles"],
                     pose,
                     affinity,
                     json.dumps(scores),
@@ -159,13 +227,20 @@ def index_job_csv(
             )
     connection.execute(
         """
-        INSERT INTO indexed_jobs(job_id, source_mtime_ns, score_fields_json)
-        VALUES (?, ?, ?)
+        INSERT INTO indexed_jobs(
+            job_id, source_mtime_ns, score_fields_json, index_version
+        ) VALUES (?, ?, ?, ?)
         ON CONFLICT(job_id) DO UPDATE SET
             source_mtime_ns = excluded.source_mtime_ns,
-            score_fields_json = excluded.score_fields_json
+            score_fields_json = excluded.score_fields_json,
+            index_version = excluded.index_version
         """,
-        (job["job_id"], source_mtime_ns, json.dumps(sorted(score_fields))),
+        (
+            job["job_id"],
+            source_mtime_ns,
+            json.dumps(sorted(score_fields)),
+            INDEX_VERSION,
+        ),
     )
     connection.commit()
 
@@ -367,4 +442,72 @@ def query_result_page(
         "sort_key": sort_key,
         "direction": direction_sql.lower(),
         "score_columns": score_fields,
+    }
+
+
+def query_analysis_data(connection: sqlite3.Connection) -> dict:
+    """Return the best pose per ligand and job for cross-job analysis."""
+
+    score_columns = ["affinity", *available_score_fields(connection)]
+    rows = connection.execute(
+        """
+        WITH ranked AS (
+            SELECT
+                r.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY r.job_id, r.ligand_code
+                    ORDER BY
+                        r.affinity IS NULL ASC,
+                        r.affinity ASC,
+                        r.rank ASC,
+                        r.pose ASC
+                ) AS pose_rank
+            FROM results r
+            LEFT JOIN hidden_ligands hidden
+              ON hidden.job_id = r.job_id
+             AND hidden.ligand_code = r.ligand_code
+            LEFT JOIN hidden_jobs hidden_job ON hidden_job.job_id = r.job_id
+            WHERE hidden.job_id IS NULL AND hidden_job.job_id IS NULL
+        )
+        SELECT * FROM ranked
+        WHERE pose_rank = 1
+        ORDER BY created_at DESC, job_id ASC, rank ASC, ligand_code ASC
+        """
+    ).fetchall()
+
+    jobs: dict[str, dict] = {}
+    points: list[dict] = []
+    for row in rows:
+        jobs.setdefault(
+            row["job_id"],
+            {
+                "id": row["job_id"],
+                "name": row["job_name"],
+                "engine": row["engine"],
+                "receptor_name": row["receptor_name"],
+                "created_at": row["created_at"],
+            },
+        )
+        scores = json.loads(row["scores_json"])
+        if row["affinity"] is not None:
+            scores["affinity"] = row["affinity"]
+        smiles = row["smiles"] or ""
+        match_key = smiles or row["ligand_id"] or row["ligand_code"]
+        points.append(
+            {
+                "job_id": row["job_id"],
+                "match_key": match_key,
+                "ligand_id": row["ligand_id"],
+                "ligand_code": row["ligand_code"],
+                "ligand_name": row["ligand_name"],
+                "smiles": smiles,
+                "chemotype_id": row["chemotype_id"] or "CT-UNKNOWN",
+                "chemotype_smiles": row["chemotype_smiles"] or "",
+                "scores": scores,
+            }
+        )
+    return {
+        "jobs": list(jobs.values()),
+        "score_columns": score_columns,
+        "points": points,
     }

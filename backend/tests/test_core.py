@@ -1117,6 +1117,37 @@ def test_streamed_docking_scores_are_sorted_on_disk(tmp_path: Path):
     assert [row["ligand_code"] for row in written] == ["first", "second", "unscored"]
     assert [row["rank"] for row in written] == ["1", "2", "3"]
     assert written[0]["ligand_name"] == "First"
+    assert "chemotype_id" in written[0]
+    assert "chemotype_smiles" in written[0]
+
+
+def test_chemotypes_use_stable_bemis_murcko_scaffolds():
+    from app.services.chemotypes import (
+        chemotype_from_smiles,
+        molecular_properties_from_smiles,
+        normalized_score_fields,
+        structure_svg,
+    )
+
+    benzene = chemotype_from_smiles("c1ccccc1")
+    toluene = chemotype_from_smiles("Cc1ccccc1")
+    acyclic = chemotype_from_smiles("CCO")
+
+    assert benzene == toluene
+    assert benzene["chemotype_smiles"] == "c1ccccc1"
+    assert acyclic["chemotype_id"].startswith("CT-")
+    assert acyclic["chemotype_smiles"] == "CCC"
+
+    properties = molecular_properties_from_smiles("CCO")
+    assert properties["HAC"] == 3
+    assert properties["HBD"] == 1
+    assert properties["HBA"] == 1
+    assert properties["MW"] == pytest.approx(46.069)
+    assert normalized_score_fields(-9.0, properties["HAC"]) == {
+        "Score_per_HAC": -3.0,
+        "Score_per_HAC2": -1.0,
+    }
+    assert "<svg" in structure_svg(benzene["chemotype_smiles"])
 
 
 def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
@@ -1125,6 +1156,7 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
     from app.services.docking_result_pages import (
         index_job_csv,
         open_results_index,
+        query_analysis_data,
         query_result_page,
         query_selected_results,
         sync_hidden_jobs,
@@ -1196,6 +1228,7 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
         connection,
         [("job-1", "ligand-104", 1), ("job-1", "ligand-000", 1)],
     )
+    analysis = query_analysis_data(connection)
     sync_hidden_ligands(connection, {"job-1:ligand-000"})
     hidden = query_result_page(
         connection, page=1, sort_key="rank", direction="asc"
@@ -1206,8 +1239,23 @@ def test_docking_results_are_paginated_and_sorted_server_side(tmp_path: Path):
     assert first_page["items"][0]["ligand_code"] == "ligand-000"
     assert len(second_page["items"]) == 5
     assert score_sorted["items"][0]["ligand_code"] == "ligand-104"
-    assert score_sorted["score_columns"] == ["rmsd_lb"]
+    expected_fields = {
+        "HAC",
+        "HBA",
+        "HBD",
+        "MW",
+        "RoB",
+        "Score_per_HAC",
+        "Score_per_HAC2",
+        "TPSA",
+        "XLogP",
+        "rmsd_lb",
+    }
+    assert set(score_sorted["score_columns"]) == expected_fields
     assert [row["ligand_code"] for row in selected] == ["ligand-104", "ligand-000"]
+    assert set(analysis["score_columns"]) == {"affinity", *expected_fields}
+    assert len(analysis["points"]) == 105
+    assert analysis["points"][0]["chemotype_id"] != "CT-UNKNOWN"
     assert hidden["total"] == 104
     assert hidden["items"][0]["ligand_code"] == "ligand-001"
     with pytest.raises(ValueError, match="ligand-000"):

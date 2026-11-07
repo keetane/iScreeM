@@ -11,6 +11,11 @@ from .config import settings
 from .db import SessionLocal
 from .models import DockingGrid, DockingJob, JobStatus, Ligand, Pocket, Protein
 from .services.commands import run_command
+from .services.chemotypes import (
+    chemotype_from_smiles,
+    molecular_properties_from_smiles,
+    normalized_score_fields,
+)
 from .services.docking import ADAPTERS, DockingInput
 from .services.docking_result_pages import index_job_csv, open_results_index
 from .services.docking_uploads import (
@@ -81,6 +86,8 @@ def _write_streamed_score_csv(
                 "ligand_id",
                 "ligand_name",
                 "smiles",
+                "chemotype_id",
+                "chemotype_smiles",
                 "pose",
                 *ordered_fields,
             ],
@@ -583,6 +590,8 @@ def run_docking(job_id: str):
             ligand["smiles"] = preparation_report.get(
                 "canonical_smiles", ligand.get("smiles", "")
             )
+            chemotype = chemotype_from_smiles(ligand["smiles"])
+            molecular_properties = molecular_properties_from_smiles(ligand["smiles"])
             if params.get("local_only"):
                 # --local_only never moves the ligand into the box, so a pose
                 # that starts outside it is scored away from the receptor and
@@ -640,14 +649,27 @@ def run_docking(job_id: str):
                     "ligand_id": ligand["ligand_id"],
                     "ligand_name": ligand["name"],
                     "smiles": ligand["smiles"],
+                    **chemotype,
                     "pose": pose_index,
+                    **molecular_properties,
                     **score,
+                    **normalized_score_fields(
+                        score.get("affinity"), molecular_properties.get("HAC")
+                    ),
                 }
                 score_fields.update(
                     key
                     for key in row
                     if key
-                    not in {"ligand_code", "ligand_id", "ligand_name", "smiles", "pose"}
+                    not in {
+                        "ligand_code",
+                        "ligand_id",
+                        "ligand_name",
+                        "smiles",
+                        "chemotype_id",
+                        "chemotype_smiles",
+                        "pose",
+                    }
                 )
                 score_sequence += 1
                 score_store.execute(

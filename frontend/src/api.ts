@@ -153,6 +153,18 @@ export const api = {
       `/api/projects/${projectId}/docking-results?${query}`,
     );
   },
+  dockingAnalysis: (projectId: string) =>
+    request<import("./types").DockingAnalysis>(
+      `/api/projects/${projectId}/docking-analysis`,
+    ),
+  structureSvgUrl: (smiles: string, width = 240, height = 140) => {
+    const query = new URLSearchParams({
+      smiles,
+      width: String(width),
+      height: String(height),
+    });
+    return `/api/chemistry/structure.svg?${query}`;
+  },
   setDockingResultJobVisibility: (
     projectId: string,
     jobId: string,

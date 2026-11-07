@@ -35,11 +35,13 @@ from .schemas import (
     SmilesLigand,
 )
 from .services.commands import all_tools
+from .services.chemotypes import structure_svg
 from .services.docking import local_only_input_error
 from .services.docking_result_pages import (
     index_job_csv,
     open_results_index,
     prune_indexed_jobs,
+    query_analysis_data,
     query_result_page,
     query_selected_results,
     sync_hidden_jobs,
@@ -1273,6 +1275,32 @@ def docking_results(
         return result
     finally:
         connection.close()
+
+
+@app.get("/api/projects/{project_id}/docking-analysis")
+def docking_analysis(project_id: str, db: Session = Depends(get_db)):
+    connection = _open_synced_docking_results_index(project_id, db)
+    try:
+        return query_analysis_data(connection)
+    finally:
+        connection.close()
+
+
+@app.get("/api/chemistry/structure.svg")
+def chemistry_structure_svg(
+    smiles: str = Query(min_length=1, max_length=4096),
+    width: int = Query(default=240, ge=80, le=600),
+    height: int = Query(default=140, ge=60, le=400),
+):
+    try:
+        drawing = structure_svg(smiles, width=width, height=height)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(
+        content=drawing,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 def _legacy_docking_results(project_id: str, db: Session = Depends(get_db)):

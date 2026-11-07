@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Beaker,
   Boxes,
+  ChartScatter,
   ChevronRight,
   CircleDotDashed,
   Copy,
@@ -58,6 +59,7 @@ import type {
 import { Viewer } from "./components/Viewer";
 import { GridEditor } from "./components/GridEditor";
 import { DataTable } from "./components/DataTable";
+import { AnalysisPanel } from "./components/AnalysisPanel";
 
 const KetcherDialog = lazy(() =>
   import("./components/KetcherDialog").then((module) => ({
@@ -65,7 +67,7 @@ const KetcherDialog = lazy(() =>
   })),
 );
 
-type Tab = "protein" | "ligands" | "docking" | "jobs" | "licenses";
+type Tab = "protein" | "ligands" | "docking" | "analysis" | "jobs" | "licenses";
 const AlphaHelix = (props: LucideProps) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
     <path d="M7 3c6 0 10 3 10 6s-4 6-10 6" />
@@ -90,6 +92,7 @@ const tabs: { id: Tab; label: string; icon: ComponentType<LucideProps> }[] = [
   { id: "ligands", label: "Ligand Preparation", icon: BrandPentagon },
   { id: "docking", label: "Docking", icon: Workflow },
   { id: "jobs", label: "Job Monitor", icon: Activity },
+  { id: "analysis", label: "Analysis", icon: ChartScatter },
   { id: "licenses", label: "OSS / Licenses", icon: Scale },
 ];
 const pocketColors = [
@@ -726,6 +729,13 @@ export default function App() {
           </button>
         </div>
       )}
+      {tab === "analysis" ? (
+        <main className="min-h-0 flex-1 overflow-hidden p-5">
+          <AnalysisPanel
+            project={project}
+          />
+        </main>
+      ) : (
       <main className="min-h-0 flex-1 overflow-hidden p-5">
         <div className="grid h-full min-h-0 grid-cols-[260px_minmax(480px,1fr)_320px] grid-rows-[minmax(320px,3fr)_minmax(160px,2fr)] gap-4">
           <aside className="panel row-span-1 min-h-0 overflow-y-auto">
@@ -884,6 +894,7 @@ export default function App() {
           </section>
         </div>
       </main>
+      )}
       {viewerPopupRoot && createPortal(viewerElement, viewerPopupRoot)}
     </div>
   );
