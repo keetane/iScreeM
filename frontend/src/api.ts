@@ -157,6 +157,13 @@ export const api = {
     request<import("./types").DockingAnalysis>(
       `/api/projects/${projectId}/docking-analysis`,
     ),
+  runVisibleDockingIfp: (projectId: string) =>
+    request<{
+      eligible_count: number;
+      queued_job_ids: string[];
+      skipped_active_job_ids: string[];
+      failed: { job_id: string; error: string }[];
+    }>(`/api/projects/${projectId}/ifp/run-visible`, { method: "POST" }),
   structureSvgUrl: (smiles: string, width = 240, height = 140) => {
     const query = new URLSearchParams({
       smiles,

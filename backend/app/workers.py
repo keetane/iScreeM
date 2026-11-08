@@ -24,6 +24,7 @@ from .services.docking_uploads import (
     materialize_sdf_record,
 )
 from .services.grids import grid_from_coordinates, point_in_grid
+from .services.ifp import DEFAULT_SIMILARITY_THRESHOLD, run_ifp
 from .services.ligand_normalization import (
     normalize_docked_sdf,
     normalize_prepared_sdf,
@@ -389,6 +390,58 @@ def prepare_ligands(job_id: str, ligand_ids: list[str], seed: int, force_field: 
     )
     db.commit()
     db.close()
+
+
+def run_ifp_analysis(ifp_job_id: str, docking_job_id: str):
+    """Run cached ProLIF post-processing without changing docking job status."""
+    db = SessionLocal()
+    job = db.get(DockingJob, ifp_job_id)
+    docking_job = db.get(DockingJob, docking_job_id)
+    try:
+        if not job or not docking_job:
+            raise RuntimeError("IFP or docking job no longer exists")
+        job.status, job.started_at = JobStatus.RUNNING, datetime.now(UTC)
+        db.commit()
+        root = docking_job_root(
+            settings.data_dir / "projects" / docking_job.project_id,
+            docking_job.id,
+        )
+        config_path = root / "config.json"
+        if not config_path.is_file():
+            raise RuntimeError("Docking configuration is missing")
+        config = json.loads(config_path.read_text())
+        receptor = Path(config.get("receptor_used") or "")
+        reference_value = config.get("autobox_ligand_file")
+        reference = Path(reference_value) if reference_value else None
+        result = run_ifp(
+            job_id=docking_job.id,
+            job_root=root,
+            receptor=receptor,
+            threshold=float(
+                (job.parameters or {}).get(
+                    "similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD
+                )
+            ),
+            reference=reference,
+        )
+        job.total_count = int(result.get("pose_count", 0))
+        job.success_count = int(result.get("success_count", 0))
+        job.failed_count = int(result.get("failed_count", 0))
+        job.completed_count = job.success_count + job.failed_count
+        _finish(
+            job,
+            JobStatus.PARTIAL_SUCCESS if job.failed_count else JobStatus.COMPLETED,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        job = db.get(DockingJob, ifp_job_id)
+        if job:
+            _finish(job, JobStatus.FAILED, str(exc))
+            db.commit()
+        raise
+    finally:
+        db.close()
 
 
 def run_docking(job_id: str):

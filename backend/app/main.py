@@ -1292,6 +1292,140 @@ def docking_analysis(project_id: str, db: Session = Depends(get_db)):
         connection.close()
 
 
+@app.post("/api/projects/{project_id}/docking-results/{job_id}/ifp/recalculate")
+def recalculate_docking_ifp(
+    project_id: str,
+    job_id: str,
+    threshold: float = Query(default=0.7, gt=0, le=1),
+    db: Session = Depends(get_db),
+):
+    docking_job = db.get(DockingJob, job_id)
+    if (
+        not docking_job
+        or docking_job.project_id != project_id
+        or docking_job.kind != "DOCKING"
+    ):
+        raise HTTPException(404, "Docking job not found")
+    root = _docking_root(project_id, job_id)
+    if not (root / "scores.csv").is_file():
+        raise HTTPException(409, "Docking results are not available yet")
+    with (root / "scores.csv").open(newline="", errors="replace") as handle:
+        pose_count = sum(1 for _ in csv.DictReader(handle))
+    item = DockingJob(
+        id=unique_database_id(db, DockingJob, f"{docking_job.name}_IFP"),
+        project_id=project_id,
+        name=f"{docking_job.name} IFP",
+        kind="IFP_ANALYSIS",
+        engine="ProLIF",
+        status=JobStatus.QUEUED,
+        parameters={
+            "docking_job_id": docking_job.id,
+            "similarity_threshold": threshold,
+        },
+        total_count=pose_count,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    from .workers import run_ifp_analysis
+
+    rq_job = enqueue_or_503(run_ifp_analysis, item.id, docking_job.id)
+    item.rq_job_id = rq_job.id
+    db.commit()
+    return serialize(item)
+
+
+@app.post("/api/projects/{project_id}/ifp/run-visible")
+def run_visible_docking_ifp(
+    project_id: str,
+    threshold: float = Query(default=0.7, gt=0, le=1),
+    db: Session = Depends(get_db),
+):
+    """Queue IFP for completed docking jobs enabled by Show results."""
+    if not db.get(Project, project_id):
+        raise HTTPException(404, "Project not found")
+
+    hidden = _hidden_result_jobs(project_id)
+    active_statuses = {
+        JobStatus.QUEUED,
+        JobStatus.PREPARING,
+        JobStatus.RUNNING,
+        JobStatus.POSTPROCESSING,
+    }
+    active_targets = {
+        str((item.parameters or {}).get("docking_job_id"))
+        for item in db.scalars(
+            select(DockingJob).where(
+                DockingJob.project_id == project_id,
+                DockingJob.kind == "IFP_ANALYSIS",
+            )
+        )
+        if item.status in active_statuses
+    }
+    candidates = [
+        item
+        for item in db.scalars(
+            select(DockingJob)
+            .where(
+                DockingJob.project_id == project_id,
+                DockingJob.kind == "DOCKING",
+            )
+            .order_by(DockingJob.created_at.asc())
+        )
+        if item.id not in hidden
+        and item.status in {JobStatus.COMPLETED, JobStatus.PARTIAL_SUCCESS}
+        and (_docking_root(project_id, item.id) / "scores.csv").is_file()
+    ]
+
+    queued: list[str] = []
+    skipped_active: list[str] = []
+    failed: list[dict[str, str]] = []
+    from .workers import run_ifp_analysis
+
+    for docking_job in candidates:
+        if docking_job.id in active_targets:
+            skipped_active.append(docking_job.id)
+            continue
+        score_path = _docking_root(project_id, docking_job.id) / "scores.csv"
+        with score_path.open(newline="", errors="replace") as handle:
+            pose_count = sum(1 for _ in csv.DictReader(handle))
+        item = DockingJob(
+            id=unique_database_id(db, DockingJob, f"{docking_job.name}_IFP"),
+            project_id=project_id,
+            name=f"{docking_job.name} IFP",
+            kind="IFP_ANALYSIS",
+            engine="ProLIF",
+            status=JobStatus.QUEUED,
+            parameters={
+                "docking_job_id": docking_job.id,
+                "similarity_threshold": threshold,
+                "requested_from": "visible_results",
+            },
+            total_count=pose_count,
+        )
+        db.add(item)
+        db.commit()
+        try:
+            rq_job = queue("default").enqueue(
+                run_ifp_analysis, item.id, docking_job.id
+            )
+            item.rq_job_id = rq_job.id
+            queued.append(docking_job.id)
+        except Exception as exc:
+            item.status = JobStatus.FAILED
+            item.error = f"Could not queue IFP analysis: {exc}"
+            item.finished_at = datetime.now(UTC)
+            failed.append({"job_id": docking_job.id, "error": str(exc)})
+        db.commit()
+
+    return {
+        "eligible_count": len(candidates),
+        "queued_job_ids": queued,
+        "skipped_active_job_ids": skipped_active,
+        "failed": failed,
+    }
+
+
 @app.get("/api/chemistry/structure.svg")
 def chemistry_structure_svg(
     smiles: str = Query(min_length=1, max_length=4096),
@@ -1658,6 +1792,8 @@ def export_selected_docking_csv(
         "smiles",
         "pose",
         "affinity",
+        "ifp_cluster_id",
+        "ifp_status",
         *score_columns,
         "engine",
         "job",
@@ -1677,6 +1813,8 @@ def export_selected_docking_csv(
             "smiles": row.get("smiles", ""),
             "pose": row["pose"],
             "affinity": row["affinity"],
+            "ifp_cluster_id": row.get("ifp_cluster_id") or "",
+            "ifp_status": row.get("ifp_status") or "Not Calculated",
             "engine": row["engine"] or "",
             "job": row["job_name"],
             "job_id": row["job_id"],
@@ -1717,6 +1855,8 @@ def export_selected_docking_sdf(
             "iScreeM_SMILES": row.get("smiles", ""),
             "iScreeM_Pose": pose,
             "iScreeM_Affinity": row["affinity"],
+            "iScreeM_IFP_Cluster": row.get("ifp_cluster_id") or "",
+            "iScreeM_IFP_Status": row.get("ifp_status") or "Not Calculated",
             "iScreeM_Engine": row["engine"],
             "iScreeM_Job": row["job_name"],
             "iScreeM_Job_ID": row["job_id"],

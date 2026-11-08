@@ -11,7 +11,7 @@ from .chemotypes import (
 )
 
 PAGE_SIZE = 100
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 FIXED_FIELDS = {
     "rank",
     "ligand_code",
@@ -20,6 +20,10 @@ FIXED_FIELDS = {
     "smiles",
     "chemotype_id",
     "chemotype_smiles",
+    "ifp_cluster_id",
+    "ifp_status",
+    "ifp_reference_id",
+    "ifp_reference_version",
     "pose",
     "",
 }
@@ -55,6 +59,8 @@ def open_results_index(path: Path) -> sqlite3.Connection:
             smiles TEXT NOT NULL,
             chemotype_id TEXT NOT NULL DEFAULT '',
             chemotype_smiles TEXT NOT NULL DEFAULT '',
+            ifp_cluster_id TEXT,
+            ifp_status TEXT,
             pose INTEGER NOT NULL,
             affinity REAL,
             scores_json TEXT NOT NULL,
@@ -83,11 +89,10 @@ def open_results_index(path: Path) -> sqlite3.Connection:
         row[1] for row in connection.execute("PRAGMA table_info(results)").fetchall()
     }
     migrated = False
-    for name in ("chemotype_id", "chemotype_smiles"):
+    for name in ("chemotype_id", "chemotype_smiles", "ifp_cluster_id", "ifp_status"):
         if name not in columns:
-            connection.execute(
-                f"ALTER TABLE results ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
-            )
+            default = " NOT NULL DEFAULT ''" if name.startswith("chemotype_") else ""
+            connection.execute(f"ALTER TABLE results ADD COLUMN {name} TEXT{default}")
             migrated = True
     if migrated:
         # Re-read legacy score summaries so their chemotypes are backfilled.
@@ -201,8 +206,8 @@ def index_job_csv(
                     result_key, rank, job_id, job_name, engine, created_at,
                     protein_id, receptor_name, ligand_id, ligand_code,
                     ligand_name, smiles, chemotype_id, chemotype_smiles,
-                    pose, affinity, scores_json, sdf_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ifp_cluster_id, ifp_status, pose, affinity, scores_json, sdf_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_key,
@@ -219,6 +224,8 @@ def index_job_csv(
                     smiles,
                     chemotype["chemotype_id"],
                     chemotype["chemotype_smiles"],
+                    str(item.get("ifp_cluster_id") or "").strip() or None,
+                    str(item.get("ifp_status") or "").strip() or None,
                     pose,
                     affinity,
                     json.dumps(scores),
@@ -512,6 +519,8 @@ def query_analysis_data(connection: sqlite3.Connection) -> dict:
                 "affinity": row["affinity"],
                 "chemotype_id": row["chemotype_id"] or "CT-UNKNOWN",
                 "chemotype_smiles": row["chemotype_smiles"] or "",
+                "ifp_cluster_id": row["ifp_cluster_id"],
+                "ifp_status": row["ifp_status"] or "Not Calculated",
                 "scores": scores,
             }
         )

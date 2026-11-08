@@ -19,14 +19,14 @@ conda run -n iScreeM uvicorn app.main:app --reload --app-dir backend --port 8000
 
 `scripts/setup_dependencies.py` はP2Rank・sminaの実行確認を行い、Redisが未導入ならmacOSではHomebrewでインストールし、Redisサービスを起動して `PONG` 応答まで確認します。P2Rankとsminaは公式配布物の場所を `.env` または `--p2rank` / `--smina` で指定してください。これらの実行ファイルとP2RankモデルはGitリポジトリには含まれません。
 
-`scripts/setup_dependencies.py` は、PDBFixer・OpenMM・PDB2PQR・RDKit・Meekoを含む `iScreeM` conda環境を作成または更新します。protein preparationは、PDBFixerでSEQRES由来の欠損残基・原子を補完し、PDB2PQRでpH 7.4のプロトン化を行います。欠損を削除して処理を継続するフォールバックはありません。
+`scripts/setup_dependencies.py` は、PDBFixer・OpenMM・PDB2PQR・RDKit・Meeko・ProLIF 2.0.3・PyArrowを含む `iScreeM` conda環境を作成または更新します。protein preparationは、PDBFixerでSEQRES由来の欠損残基・原子を補完し、PDB2PQRでpH 7.4のプロトン化を行います。欠損を削除して処理を継続するフォールバックはありません。
 
 `smina`と`gnina`はPDB受容体とSDFリガンドを直接受け取れるため、protein preparationの出力はPDBです。PDBQTはAutoDock Vina互換用の任意成果物としてのみ保持します。
 
 ローカル開発:
 
 ```bash
-conda run -n iScreeM pip install -e './backend[dev,chem]'
+conda run -n iScreeM pip install -e './backend[dev,chem,ifp]'
 conda run -n iScreeM uvicorn app.main:app --reload --app-dir backend --port 8000
 
 cd frontend
@@ -52,6 +52,7 @@ conda run -n iScreeM rq worker docking default --worker-class rq.worker.SimpleWo
 - Pocket 点群または残基座標からの Grid 作成（片側 4 Å、最小 18 Å）、編集・保存・複製
 - SMILES batch の RDKit/Meeko 調製ジョブと descriptor 保存
 - smina / gnina Adapter、許可リスト式引数、ジョブ snapshot、Ligand 単位の結果保存
+- Job MonitorでShow resultsを有効にしたDocking jobを対象とする、ProLIFによるPose単位IFP、Tanimoto similarity、IFP cluster/countのバックグラウンド解析とParquet/CSVキャッシュ
 - Job monitor、永続状態、SSE + polling fallback、キャンセル要求
 - 実行ファイル probe API（存在だけで available にしない）
 

@@ -118,7 +118,16 @@ def ensure_iscreem_environment(env_name: str, install: bool) -> tuple[bool, str]
     if not env_file.is_file():
         return False, f"missing environment file: {env_file}"
     probe = subprocess.run(
-        [manager, "run", "-n", env_name, "python", "-c", "import pdbfixer, openmm"],
+        [
+            manager,
+            "run",
+            "-n",
+            env_name,
+            "python",
+            "-c",
+            "import pdbfixer, openmm, prolif, pyarrow; "
+            "assert prolif.__version__ == '2.0.3'",
+        ],
         capture_output=True,
         text=True,
         timeout=30,
@@ -127,7 +136,7 @@ def ensure_iscreem_environment(env_name: str, install: bool) -> tuple[bool, str]
     if probe.returncode == 0:
         return True, f"{env_name} ({manager})"
     if not install:
-        return False, f"{env_name} is missing PDBFixer/OpenMM"
+        return False, f"{env_name} is missing PDBFixer/OpenMM/ProLIF/PyArrow"
     print(f"Installing the {env_name} conda environment from {env_file}...")
     update = subprocess.run(
         [manager, "env", "update", "-n", env_name, "-f", str(env_file)],
@@ -136,7 +145,16 @@ def ensure_iscreem_environment(env_name: str, install: bool) -> tuple[bool, str]
     if update.returncode:
         return False, f"conda could not create/update {env_name}"
     verify = subprocess.run(
-        [manager, "run", "-n", env_name, "python", "-c", "import pdbfixer, openmm"],
+        [
+            manager,
+            "run",
+            "-n",
+            env_name,
+            "python",
+            "-c",
+            "import pdbfixer, openmm, prolif, pyarrow; "
+            "assert prolif.__version__ == '2.0.3'",
+        ],
         capture_output=True,
         text=True,
         timeout=30,

@@ -31,7 +31,7 @@ type ChartPoint = {
   chemotypeId: string;
   jobId: string;
   jobName: string;
-  colorKey: string;
+  color: string;
   smiles: string;
   source: DockingAnalysisPoint;
 };
@@ -50,6 +50,7 @@ type PlotFilterCondition = {
   metric: string;
   minimum: string;
   maximum: string;
+  category: string;
 };
 
 const chemicalPropertyKeys = new Set([
@@ -62,6 +63,17 @@ const chemicalPropertyKeys = new Set([
   "HAC",
 ]);
 
+const ifpMetricKeys = new Set([
+  "ifp_similarity",
+  "ifp_count",
+  "ifp_occurrence_count",
+  "ifp_hbond_count",
+  "ifp_hydrophobic_count",
+  "ifp_pi_count",
+]);
+
+const numericIfpColorModes = [...ifpMetricKeys];
+
 const scoreLabels: Record<string, string> = {
   MW: "MW",
   XLogP: "XLogP",
@@ -72,6 +84,13 @@ const scoreLabels: Record<string, string> = {
   HAC: "Heavy atom count",
   Score_per_HAC: "Score/HAC",
   Score_per_HAC2: "Score/HAC²",
+  ifp_cluster_id: "IFP Cluster",
+  ifp_similarity: "IFP Similarity",
+  ifp_count: "IFP Count",
+  ifp_occurrence_count: "IFP Occurrence Count",
+  ifp_hbond_count: "H-bond Count",
+  ifp_hydrophobic_count: "Hydrophobic Count",
+  ifp_pi_count: "Pi Interaction Count",
 };
 const scoreLabel = (value: string) => scoreLabels[value] || value;
 
@@ -93,6 +112,12 @@ const formatMetric = (value: number | undefined) =>
 
 const finiteNumber = (value: number | null | undefined) =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+const continuousColor = (value: number, low: number, high: number) => {
+  const ratio = high === low ? 0.5 : Math.max(0, Math.min(1, (value - low) / (high - low)));
+  const hue = 220 - ratio * 205;
+  return `hsl(${hue} 78% 58%)`;
+};
 
 const pearson = (points: ChartPoint[]) => {
   if (points.length < 2) return undefined;
@@ -130,7 +155,7 @@ export function AnalysisPanel({
   const [data, setData] = useState<DockingAnalysis>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [colorMode, setColorMode] = useState<"chemotype" | "job">("chemotype");
+  const [colorMode, setColorMode] = useState("chemotype");
   const [sizeColumn, setSizeColumn] = useState("none");
   const [selectedChemotypes, setSelectedChemotypes] = useState<Set<string>>(
     new Set(),
@@ -139,7 +164,7 @@ export function AnalysisPanel({
   const [chemotypeMetric, setChemotypeMetric] = useState("affinity");
   const [aggregateMode, setAggregateMode] = useState<"min" | "max">("min");
   const [plotFilters, setPlotFilters] = useState<PlotFilterCondition[]>([
-    { id: 1, metric: "affinity", minimum: "", maximum: "" },
+    { id: 1, metric: "affinity", minimum: "", maximum: "", category: "" },
   ]);
   const nextFilterId = useRef(2);
   const [chemotypeSort, setChemotypeSort] = useState<{
@@ -174,13 +199,22 @@ export function AnalysisPanel({
       )
         setSizeColumn("none");
       if (!scores.includes(chemotypeMetric)) setChemotypeMetric(scores[0]);
+      const hasClusters = next.points.some((point) => point.ifp_cluster_id);
       setPlotFilters((current) =>
         current.map((filter) =>
-          scores.includes(filter.metric)
+          scores.includes(filter.metric) ||
+          (filter.metric === "ifp_cluster_id" && hasClusters)
             ? filter
-            : { ...filter, metric: scores[0] },
+            : { ...filter, metric: scores[0], category: "" },
         ),
       );
+      if (
+        colorMode !== "chemotype" &&
+        colorMode !== "job" &&
+        !scores.includes(colorMode) &&
+        !(colorMode === "ifp_cluster_id" && hasClusters)
+      )
+        setColorMode("chemotype");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -192,7 +226,7 @@ export function AnalysisPanel({
     setSelectedChemotypes(new Set());
     setSelectedOnly(false);
     setPlotFilters([
-      { id: 1, metric: "affinity", minimum: "", maximum: "" },
+      { id: 1, metric: "affinity", minimum: "", maximum: "", category: "" },
     ]);
     nextFilterId.current = 2;
     setChemotypeSort({ key: "compounds", direction: "desc" });
@@ -220,6 +254,41 @@ export function AnalysisPanel({
     );
   }, [data]);
 
+  const ifpClusterIds = useMemo(
+    () =>
+      [...new Set(data?.points.map((point) => point.ifp_cluster_id).filter((value): value is string => Boolean(value)) || [])].sort(),
+    [data],
+  );
+
+  const colorByIfpCluster = useMemo(
+    () =>
+      new Map(
+        ifpClusterIds.map((id, index) => [
+          id,
+          id === "No Interaction"
+            ? "#64748b"
+            : id === "IFP Error"
+              ? "#334155"
+              : colors[index % colors.length],
+        ]),
+      ),
+    [ifpClusterIds],
+  );
+
+  const numericColorRange = useMemo(() => {
+    if (!data || !ifpMetricKeys.has(colorMode)) return undefined;
+    if (colorMode === "ifp_similarity") return { low: 0, high: 1 };
+    const values = data.points
+      .map((point) => finiteNumber(point.scores[colorMode]))
+      .filter((value): value is number => value !== undefined)
+      .sort((left, right) => left - right);
+    if (!values.length) return undefined;
+    return {
+      low: values[Math.floor((values.length - 1) * 0.05)],
+      high: values[Math.floor((values.length - 1) * 0.95)],
+    };
+  }, [colorMode, data]);
+
   const plottedPoints = useMemo(() => {
     if (!data) return [];
     const jobs = new Map(data.jobs.map((job) => [job.id, job]));
@@ -230,6 +299,8 @@ export function AnalysisPanel({
       if (
         (selectedOnly && !selectedChemotypes.has(row.chemotype_id)) ||
         !plotFilters.every((filter) => {
+          if (filter.metric === "ifp_cluster_id")
+            return !filter.category || row.ifp_cluster_id === filter.category;
           const hasMinimum = filter.minimum.trim() !== "";
           const hasMaximum = filter.maximum.trim() !== "";
           if (!hasMinimum && !hasMaximum) return true;
@@ -245,7 +316,31 @@ export function AnalysisPanel({
       )
         return [];
       return [
-        {
+        (() => {
+          const colorCategory =
+            colorMode === "job"
+              ? row.job_id
+              : colorMode === "ifp_cluster_id"
+                ? row.ifp_cluster_id || "IFP Error"
+                : colorMode === "chemotype"
+                  ? row.chemotype_id
+                  : row.key;
+          const colorValue = finiteNumber(row.scores[colorMode]);
+          const color =
+            colorMode === "job"
+              ? colorByJob.get(row.job_id)
+              : colorMode === "ifp_cluster_id"
+                ? colorByIfpCluster.get(colorCategory)
+                : colorMode === "chemotype"
+                  ? colorByChemotype.get(row.chemotype_id)
+                  : colorValue !== undefined && numericColorRange
+                    ? continuousColor(
+                        colorValue,
+                        numericColorRange.low,
+                        numericColorRange.high,
+                      )
+                    : "#64748b";
+          return {
           x,
           y,
           size:
@@ -257,15 +352,20 @@ export function AnalysisPanel({
           chemotypeId: row.chemotype_id,
           jobId: row.job_id,
           jobName: jobs.get(row.job_id)?.name || row.job_id,
-          colorKey: colorMode === "job" ? row.job_id : row.chemotype_id,
+          color: color || "#94a3b8",
           smiles: row.smiles,
           source: row,
-        },
+          };
+        })(),
       ];
     });
   }, [
     colorMode,
+    colorByChemotype,
+    colorByIfpCluster,
+    colorByJob,
     data,
+    numericColorRange,
     plotFilters,
     scoreX,
     scoreY,
@@ -356,15 +456,49 @@ export function AnalysisPanel({
   };
 
   const correlation = pearson(plottedPoints);
-  const plotColors = colorMode === "job" ? colorByJob : colorByChemotype;
-  const colorLegend =
-    colorMode === "job"
-      ? (data?.jobs || []).map((job) => ({
+  const colorLegend = useMemo(() => {
+    if (colorMode === "job")
+      return (data?.jobs || []).map((job) => ({
           key: job.id,
           label: job.name,
           color: colorByJob.get(job.id) || "#94a3b8",
-        }))
-      : [];
+        }));
+    if (colorMode === "ifp_cluster_id")
+      return ifpClusterIds.slice(0, 50).map((id) => ({
+        key: id,
+        label: id,
+        color: colorByIfpCluster.get(id) || "#94a3b8",
+      }));
+    if (ifpMetricKeys.has(colorMode) && numericColorRange)
+      return [
+        {
+          key: "low",
+          label: `Low ${formatMetric(numericColorRange.low)}`,
+          color: continuousColor(
+            numericColorRange.low,
+            numericColorRange.low,
+            numericColorRange.high,
+          ),
+        },
+        {
+          key: "high",
+          label: `High ${formatMetric(numericColorRange.high)}`,
+          color: continuousColor(
+            numericColorRange.high,
+            numericColorRange.low,
+            numericColorRange.high,
+          ),
+        },
+      ];
+    return [];
+  }, [
+    colorByIfpCluster,
+    colorByJob,
+    colorMode,
+    data,
+    ifpClusterIds,
+    numericColorRange,
+  ]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -519,6 +653,7 @@ export function AnalysisPanel({
                         metric,
                         minimum: "",
                         maximum: "",
+                        category: "",
                       },
                     ]);
                   }}
@@ -539,49 +674,82 @@ export function AnalysisPanel({
                         setPlotFilters((current) =>
                           current.map((item) =>
                             item.id === filter.id
-                              ? { ...item, metric: event.target.value }
+                              ? {
+                                  ...item,
+                                  metric: event.target.value,
+                                  minimum: "",
+                                  maximum: "",
+                                  category: "",
+                                }
                               : item,
                           ),
                         )
                       }
                       aria-label="Plot filter property"
                     >
-                      <MetricOptions columns={data.score_columns} />
+                      <MetricOptions
+                        columns={data.score_columns}
+                        includeIfpCluster={ifpClusterIds.length > 0}
+                      />
                     </select>
-                    <input
-                      className="input min-w-0"
-                      type="number"
-                      step="any"
-                      value={filter.minimum}
-                      onChange={(event) =>
-                        setPlotFilters((current) =>
-                          current.map((item) =>
-                            item.id === filter.id
-                              ? { ...item, minimum: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      placeholder="Min"
-                      aria-label={`${scoreLabel(filter.metric)} minimum`}
-                    />
-                    <input
-                      className="input min-w-0"
-                      type="number"
-                      step="any"
-                      value={filter.maximum}
-                      onChange={(event) =>
-                        setPlotFilters((current) =>
-                          current.map((item) =>
-                            item.id === filter.id
-                              ? { ...item, maximum: event.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                      placeholder="Max"
-                      aria-label={`${scoreLabel(filter.metric)} maximum`}
-                    />
+                    {filter.metric === "ifp_cluster_id" ? (
+                      <select
+                        className="input col-span-2 min-w-0"
+                        value={filter.category}
+                        onChange={(event) =>
+                          setPlotFilters((current) =>
+                            current.map((item) =>
+                              item.id === filter.id
+                                ? { ...item, category: event.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                        aria-label="IFP cluster filter"
+                      >
+                        <option value="">All clusters</option>
+                        {ifpClusterIds.map((id) => (
+                          <option key={id} value={id}>{id}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <>
+                        <input
+                          className="input min-w-0"
+                          type="number"
+                          step="any"
+                          value={filter.minimum}
+                          onChange={(event) =>
+                            setPlotFilters((current) =>
+                              current.map((item) =>
+                                item.id === filter.id
+                                  ? { ...item, minimum: event.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                          placeholder="Min"
+                          aria-label={`${scoreLabel(filter.metric)} minimum`}
+                        />
+                        <input
+                          className="input min-w-0"
+                          type="number"
+                          step="any"
+                          value={filter.maximum}
+                          onChange={(event) =>
+                            setPlotFilters((current) =>
+                              current.map((item) =>
+                                item.id === filter.id
+                                  ? { ...item, maximum: event.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                          placeholder="Max"
+                          aria-label={`${scoreLabel(filter.metric)} maximum`}
+                        />
+                      </>
+                    )}
                     <button
                       className="rounded p-1 text-slate-500 transition hover:bg-white/5 hover:text-red-300"
                       aria-label={`Remove ${scoreLabel(filter.metric)} filter`}
@@ -623,7 +791,8 @@ export function AnalysisPanel({
                     disabled={
                       !selectedOnly &&
                       !plotFilters.some(
-                        (filter) => filter.minimum || filter.maximum,
+                        (filter) =>
+                          filter.minimum || filter.maximum || filter.category,
                       )
                     }
                     onClick={() => {
@@ -633,6 +802,7 @@ export function AnalysisPanel({
                           ...filter,
                           minimum: "",
                           maximum: "",
+                          category: "",
                         })),
                       );
                     }}
@@ -657,9 +827,17 @@ export function AnalysisPanel({
                 </select>
               </Control>
               <Control label="Marker color">
-                <select className="input" value={colorMode} onChange={(event) => setColorMode(event.target.value as "chemotype" | "job")}>
+                <select className="input" value={colorMode} onChange={(event) => setColorMode(event.target.value)}>
                   <option value="chemotype">Chemotype</option>
                   <option value="job">Docking job</option>
+                  {ifpClusterIds.length > 0 && (
+                    <option value="ifp_cluster_id">IFP Cluster</option>
+                  )}
+                  {numericIfpColorModes
+                    .filter((metric) => data.score_columns.includes(metric))
+                    .map((metric) => (
+                      <option key={metric} value={metric}>{scoreLabel(metric)}</option>
+                    ))}
                 </select>
               </Control>
               <Control label="Marker size">
@@ -679,7 +857,6 @@ export function AnalysisPanel({
               points={plottedPoints}
               xLabel={scoreLabel(scoreX)}
               yLabel={scoreLabel(scoreY)}
-              colorByKey={plotColors}
               legend={colorLegend}
               selectedChemotypes={selectedChemotypes}
               selectedPointKey={selectedPoseKey}
@@ -699,9 +876,18 @@ function Control({ label, children }: { label: string; children: React.ReactNode
   return <label className="min-w-0 text-[10px] font-semibold uppercase tracking-wider text-slate-500"><span className="mb-1 block">{label}</span>{children}</label>;
 }
 
-function MetricOptions({ columns }: { columns: string[] }) {
+function MetricOptions({
+  columns,
+  includeIfpCluster = false,
+}: {
+  columns: string[];
+  includeIfpCluster?: boolean;
+}) {
   const properties = columns.filter((column) => chemicalPropertyKeys.has(column));
-  const scores = columns.filter((column) => !chemicalPropertyKeys.has(column));
+  const ifpMetrics = columns.filter((column) => ifpMetricKeys.has(column));
+  const scores = columns.filter(
+    (column) => !chemicalPropertyKeys.has(column) && !ifpMetricKeys.has(column),
+  );
   return (
     <>
       {scores.length > 0 && (
@@ -718,6 +904,16 @@ function MetricOptions({ columns }: { columns: string[] }) {
           ))}
         </optgroup>
       )}
+      {(includeIfpCluster || ifpMetrics.length > 0) && (
+        <optgroup label="Interaction fingerprints">
+          {includeIfpCluster && (
+            <option value="ifp_cluster_id">IFP Cluster</option>
+          )}
+          {ifpMetrics.map((column) => (
+            <option key={column} value={column}>{scoreLabel(column)}</option>
+          ))}
+        </optgroup>
+      )}
     </>
   );
 }
@@ -726,7 +922,6 @@ function ScatterPlot({
   points,
   xLabel,
   yLabel,
-  colorByKey,
   legend,
   selectedChemotypes,
   selectedPointKey,
@@ -735,7 +930,6 @@ function ScatterPlot({
   points: ChartPoint[];
   xLabel: string;
   yLabel: string;
-  colorByKey: Map<string, string>;
   legend: { key: string; label: string; color: string }[];
   selectedChemotypes: Set<string>;
   selectedPointKey?: string;
@@ -899,10 +1093,10 @@ function ScatterPlot({
           !selectedChemotypes.has(point.chemotypeId);
         context.beginPath();
         context.arc(x, y, pointRadius + (selectedPoint ? 2 : 0), 0, Math.PI * 2);
-        context.fillStyle = muted
-          ? "#64748b55"
-          : `${colorByKey.get(point.colorKey) || "#94a3b8"}cc`;
+        context.globalAlpha = muted ? 0.3 : 0.8;
+        context.fillStyle = muted ? "#64748b" : point.color;
         context.fill();
+        context.globalAlpha = 1;
         context.strokeStyle = selectedPoint
           ? "#f8fafc"
           : muted
@@ -922,7 +1116,6 @@ function ScatterPlot({
     points,
     xLabel,
     yLabel,
-    colorByKey,
     selectedChemotypes,
     selectedPointKey,
     view,
@@ -1051,6 +1244,11 @@ function ScatterPlot({
           <div className="font-semibold text-slate-100">{hover.point.ligandName}</div>
           <div className="text-slate-500">{hover.point.ligandCode} · {hover.point.jobName}</div>
           <div className="text-slate-500">{hover.point.chemotypeId}</div>
+          {hover.point.source.ifp_cluster_id && (
+            <div className="text-slate-500">
+              {hover.point.source.ifp_cluster_id} · {hover.point.source.ifp_status}
+            </div>
+          )}
           {hover.point.smiles && (
             <img
               className="mt-2 h-32 w-full rounded-md bg-white object-contain"

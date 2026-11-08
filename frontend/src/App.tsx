@@ -1919,6 +1919,7 @@ function BottomPanel(props: {
   if (tab === "jobs")
     return (
       <JobsBottom
+        project={project}
         jobs={jobs}
         act={props.act}
         updatingResultJobId={props.updatingResultJobId}
@@ -2821,11 +2822,13 @@ function LigandBottom({
 }
 
 function JobsBottom({
+  project,
   jobs,
   act,
   updatingResultJobId,
   onSetDockingJobVisibility,
 }: {
+  project?: Project;
   jobs: Job[];
   act: (fn: () => Promise<unknown>, msg?: string) => void;
   updatingResultJobId?: string;
@@ -2838,6 +2841,17 @@ function JobsBottom({
           !["LIGAND_PREPARATION", "RECEPTOR_PREPARATION"].includes(
             job.kind,
           ) || job.status === "FAILED",
+      ),
+    [jobs],
+  );
+  const visibleDockingResults = useMemo(
+    () =>
+      jobs.filter(
+        (job) =>
+          job.kind === "DOCKING" &&
+          Boolean(job.result_available) &&
+          Boolean(job.result_visible) &&
+          ["COMPLETED", "PARTIAL_SUCCESS"].includes(job.status),
       ),
     [jobs],
   );
@@ -2958,10 +2972,27 @@ function JobsBottom({
     <>
       <div className="panel-head">
         <span>Background Jobs</span>
-        <span className="flex items-center gap-2 text-xs text-slate-500">
-          <RefreshCw className="h-3 w-3" />
-          Live via SSE
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="flex items-center gap-2 text-xs text-slate-500">
+            <RefreshCw className="h-3 w-3" />
+            Live via SSE
+          </span>
+          <button
+            className="btn-secondary"
+            disabled={!project || !visibleDockingResults.length}
+            title="Calculate IFP for completed docking jobs whose Show results checkbox is enabled. Unchanged inputs use the existing cache."
+            onClick={() =>
+              project &&
+              act(
+                () => api.runVisibleDockingIfp(project.id),
+                `IFP analysis requested for ${visibleDockingResults.length} shown job${visibleDockingResults.length === 1 ? "" : "s"}`,
+              )
+            }
+          >
+            <ChartScatter />
+            Calculate IFP · {visibleDockingResults.length}
+          </button>
+        </div>
       </div>
       <DataTable data={visibleJobs} columns={columns} />
     </>

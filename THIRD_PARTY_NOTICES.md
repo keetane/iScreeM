@@ -62,6 +62,9 @@ resolved dependency graph and each package's registry metadata.
 | SciPy | BSD-3-Clause |
 | Gemmi | MPL-2.0 |
 | ProDy | MIT |
+| ProLIF | Apache-2.0 |
+| MDAnalysis | LGPL-3.0-or-later |
+| PyArrow | Apache-2.0 |
 | PDBFixer | MIT |
 | OpenMM | MIT with separately identified bundled/component terms |
 | PDB2PQR | BSD |

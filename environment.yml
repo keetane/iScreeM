@@ -19,4 +19,7 @@ dependencies:
   - httpx
   - pytest
   - ruff
+  - pandas
+  - pyarrow
+  - prolif=2.0.3
   - pip
