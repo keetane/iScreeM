@@ -89,13 +89,21 @@ def recover(task: Path, raw: Path, scratch: Path | None) -> list[dict]:
     return scores
 
 
-def _ligand_name(task: Path, fallback: str) -> str:
+def _ligand_name(task: Path, ligand_code: str) -> str:
+    """Name the ligand the way the run itself would have.
+
+    iter_docking_upload_ligands() takes the SDF title line, and falls back to
+    "Ligand <index>" for the records that have none. Reproduce both, so a
+    recovered row is indistinguishable from one the job wrote itself.
+    """
     uploaded = task / "ligand.uploaded.sdf"
     if uploaded.is_file():
-        first = uploaded.read_text(errors="replace").splitlines()
-        if first and first[0].strip():
-            return first[0].strip()
-    return fallback
+        lines = uploaded.read_text(errors="replace").splitlines()
+        if lines and lines[0].strip():
+            return lines[0].strip()
+    # Ligand codes end in the record's position in the upload, zero padded.
+    index = ligand_code.rsplit("_", 1)[-1]
+    return f"Ligand {int(index)}" if index.isdigit() else ligand_code
 
 
 def merge_scores(csv_path: Path, extra: list[dict]) -> tuple[int, int]:
