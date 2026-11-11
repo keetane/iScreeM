@@ -6,6 +6,10 @@ import type {
   DockingAnalysisPoint,
   Project,
 } from "../types";
+import {
+  pointMatchesPlotFilters,
+  type PlotFilterCondition,
+} from "./analysisFilters";
 
 const colors = [
   "#47d7e8",
@@ -44,14 +48,6 @@ type ChemotypeRow = {
 };
 
 type ChemotypeSortKey = "scaffold" | "metric" | "compounds";
-
-type PlotFilterCondition = {
-  id: number;
-  metric: string;
-  minimum: string;
-  maximum: string;
-  category: string;
-};
 
 const chemicalPropertyKeys = new Set([
   "MW",
@@ -298,21 +294,7 @@ export function AnalysisPanel({
       if (x === undefined || y === undefined) return [];
       if (
         (selectedOnly && !selectedChemotypes.has(row.chemotype_id)) ||
-        !plotFilters.every((filter) => {
-          if (filter.metric === "ifp_cluster_id")
-            return !filter.category || row.ifp_cluster_id === filter.category;
-          const hasMinimum = filter.minimum.trim() !== "";
-          const hasMaximum = filter.maximum.trim() !== "";
-          if (!hasMinimum && !hasMaximum) return true;
-          const value = finiteNumber(row.scores[filter.metric]);
-          if (value === undefined) return false;
-          const minimum = hasMinimum ? Number(filter.minimum) : undefined;
-          const maximum = hasMaximum ? Number(filter.maximum) : undefined;
-          return (
-            (minimum === undefined || !Number.isFinite(minimum) || value >= minimum) &&
-            (maximum === undefined || !Number.isFinite(maximum) || value <= maximum)
-          );
-        })
+        !pointMatchesPlotFilters(row, plotFilters)
       )
         return [];
       return [
@@ -637,15 +619,18 @@ export function AnalysisPanel({
                     Plot filter
                   </div>
                   <div className="mt-0.5 text-[10px] text-slate-600">
-                    Multiple conditions are combined with AND.
+                    All conditions use AND and apply independently of X/Y axes.
                   </div>
                 </div>
                 <button
                   className="btn-secondary px-2 py-1 text-xs"
                   onClick={() => {
-                    const metric = data.score_columns.includes(scoreX)
-                      ? scoreX
-                      : data.score_columns[0];
+                    const used = new Set(
+                      plotFilters.map((filter) => filter.metric),
+                    );
+                    const metric =
+                      data.score_columns.find((column) => !used.has(column)) ||
+                      data.score_columns[0];
                     setPlotFilters((current) => [
                       ...current,
                       {
